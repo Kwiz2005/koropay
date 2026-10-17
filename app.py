@@ -9,7 +9,7 @@ from aiohttp import web
 # === ТВОИ ДАННЫЕ УЖЕ ВСТРОЕНЫ ===
 TOKEN = "8639644231:AAF2-UwFK-lxtaqqwHOi6zPf8pcQ8xe5vGY"
 ADMIN_CHAT_ID = 6084347801
-WEBAPP_URL = "WEBAPP_URL = "WEBAPP_URL = "https://koropay-en5x.onrender.com"
+WEBAPP_URL = "https://koropay-en5x.onrender.com"
 # ==================================
 
 logging.basicConfig(level=logging.INFO)
