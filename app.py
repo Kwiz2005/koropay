@@ -6,11 +6,11 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiohttp import web
 
-# === ТВОИ ДАННЫЕ ВСТРОЕНЫ ===
+# === ТВОИ ДАННЫЕ УЖЕ ВСТРОЕНЫ ===
 TOKEN = "8639644231:AAF2-UwFK-lxtaqqwHOi6zPf8pcQ8xe5vGY"
 ADMIN_CHAT_ID = 6084347801
-WEBAPP_URL = "https://koro-pay-bot.onrender.com/webapp"  # После деплоя на Render заменишь на свою ссылку (или можешь пока протестировать через ngrok)
-# ============================
+WEBAPP_URL = "https://koropay-1.onrender.com"
+# ==================================
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -41,7 +41,7 @@ async def cmd_start(message: types.Message):
   )
 
 
-# Обработка данных, прилетающих из Веб-Аппа
+# Обработка данных из Веб-Аппа
 @dp.message(F.web_app_data)
 async def handle_webapp_data(message: types.Message):
   data = message.web_app_data.data
@@ -50,7 +50,6 @@ async def handle_webapp_data(message: types.Message):
       f"@{user.username}" if user.username else f"ID: {user.id} ({user.full_name})"
   )
 
-  # Отправляем заявку тебе (админу)
   if ADMIN_CHAT_ID:
     try:
       await bot.send_message(
@@ -64,7 +63,6 @@ async def handle_webapp_data(message: types.Message):
     except Exception as e:
       logging.error(f"Ошибка отправки админу: {e}")
 
-  # Ответ клиенту в чат бота
   await message.answer(
       "✅ <b>Заявка успешно отправлена!</b>\n\n"
       "Мы получили параметры вашего платежа. Менеджер свяжется с вами для согласования расчета.\n\n"
@@ -73,7 +71,7 @@ async def handle_webapp_data(message: types.Message):
   )
 
 
-# Веб-сервер для отдачи интерфейса Веб-Аппа
+# Веб-сервер для отдачи интерфейса
 async def webapp_handler(request):
   html_content = """
     <!DOCTYPE html>
@@ -132,7 +130,7 @@ async def webapp_handler(request):
 
 async def main():
   app = web.Application()
-  app.router.add_get("/webapp", webapp_handler)
+  app.router.add_get("/", webapp_handler)
 
   runner = web.AppRunner(app)
   await runner.setup()
