@@ -99,35 +99,38 @@ async def cmd_start(message: types.Message):
         return
 
     web_app_kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="💸 Отправить перевод", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        inline_keyboard=[[InlineKeyboardButton(text="💸 Открыть Koro Pay", web_app=WebAppInfo(url=WEBAPP_URL))]]
     )
     await message.answer(
         "<b>🌐 Koro Pay — Международные переводы</b>\n\n"
         "Лимит перевода: до 25 000 ₽ за раз.\n"
-        "<i>Нажмите кнопку ниже, чтобы открыть приложение.</i>\n\n"
-        "Проверить историю переводов: /profile",
+        "<i>Нажмите кнопку ниже, чтобы начать.</i>",
         reply_markup=web_app_kb, parse_mode="HTML"
     )
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message):
-    user_id = message.from_user.id
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute("SELECT tx_id, rub_amount, local_amount, currency, status FROM transfers WHERE user_id=? ORDER BY ROWID DESC LIMIT 5", (user_id,))
-    history = c.fetchall()
-    conn.close()
+    await message.answer("Теперь ваша история доступна прямо внутри веб-приложения! Нажмите кнопку 'Открыть Koro Pay' в меню.")
 
-    if not history:
-        await message.answer("У вас пока нет истории переводов.")
-        return
-
-    text = "<b>📁 Ваши последние переводы:</b>\n\n"
-    for tx in history:
-        status_emoji = "✅" if tx[4] == "SUCCESS" else ("❌" if tx[4] == "REJECTED" else "⏳")
-        text += f"{status_emoji} <code>{tx[0]}</code> | {tx[1]} ➡️ {tx[2]} {tx[3]}\n"
-    
-    await message.answer(text, parse_mode="HTML")
+# API для выдачи истории внутри Web App
+async def api_history_handler(request):
+    try:
+        user_id = int(request.rel_url.query.get('user_id', 0))
+        conn = sqlite3.connect('koropay.db')
+        c = conn.cursor()
+        c.execute("SELECT tx_id, country, rub_amount, local_amount, currency, status FROM transfers WHERE user_id=? ORDER BY ROWID DESC LIMIT 10", (user_id,))
+        history = c.fetchall()
+        conn.close()
+        
+        result = []
+        for tx in history:
+            result.append({
+                "tx_id": tx[0], "country": tx[1], "rub": tx[2], 
+                "local": tx[3], "currency": tx[4], "status": tx[5]
+            })
+        return web.json_response({"status": "success", "data": result})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=400)
 
 
 async def api_order_handler(request):
@@ -241,7 +244,7 @@ async def webapp_handler(request):
                 --bg-color: #0c0d12; --card-bg: #151721; --card-inner: #1e2130;
                 --accent: #8b5cf6; --accent-gradient: linear-gradient(135deg, #a855f7 0%, #6366f1 100%);
                 --text-main: #ffffff; --text-muted: #9ca3af;
-                --border: rgba(139, 92, 246, 0.2); --success: #22c55e;
+                --border: rgba(139, 92, 246, 0.2); --success: #22c55e; --reject: #ef4444;
             }}
             body {{
                 background: var(--bg-color); color: var(--text-main);
@@ -275,15 +278,18 @@ async def webapp_handler(request):
                 font-size: 11px; color: var(--text-muted); background: rgba(239, 68, 68, 0.08);
                 border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 8px; padding: 10px; margin-bottom: 14px; line-height: 1.4;
             }}
-            .checkbox-group {{
-                display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 16px;
-            }}
+            .checkbox-group {{ display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }}
             .checkbox-group input {{ width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }}
             .link {{ color: #c084fc; text-decoration: underline; cursor: pointer; }}
             button.main-btn {{
                 width: 100%; padding: 14px; background: var(--accent-gradient);
                 color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: bold;
                 cursor: pointer; box-shadow: 0 4px 15px rgba(139,92,246,0.4);
+            }}
+            button.secondary-btn {{
+                width: 100%; padding: 12px; background: transparent;
+                color: var(--text-muted); border: 1px solid var(--border); border-radius: 12px; font-size: 14px; font-weight: bold;
+                cursor: pointer; margin-top: 10px;
             }}
             .screen {{ display: none; }}
             .active {{ display: block; }}
@@ -294,21 +300,24 @@ async def webapp_handler(request):
             }}
             .timer {{ font-size: 14px; color: #f59e0b; text-align: center; font-weight: bold; margin-bottom: 10px; }}
             
-            /* Модальное окно */
-            .modal-overlay {{
-                display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; padding: 16px; box-sizing: border-box;
+            /* Стили Истории */
+            .history-item {{
+                background: var(--card-inner); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px;
+                display: flex; justify-content: space-between; align-items: center;
             }}
-            .modal-content {{
-                background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
-                padding: 20px; width: 100%; max-width: 360px; max-height: 80vh; overflow-y: auto;
-            }}
+            .h-info div:first-child {{ font-size: 14px; font-weight: bold; color: #fff; }}
+            .h-info div:last-child {{ font-size: 11px; color: var(--text-muted); margin-top: 4px; }}
+            .h-status {{ font-size: 11px; padding: 4px 8px; border-radius: 6px; font-weight: bold; }}
+            .h-pending {{ background: rgba(245, 158, 11, 0.1); color: #f59e0b; }}
+            .h-success {{ background: rgba(34, 197, 94, 0.1); color: var(--success); }}
+            .h-reject {{ background: rgba(239, 68, 68, 0.1); color: var(--reject); }}
+            .empty-state {{ text-align: center; color: var(--text-muted); font-size: 14px; padding: 20px 0; }}
+
+            .modal-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; padding: 16px; box-sizing: border-box; }}
+            .modal-content {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px; padding: 20px; width: 100%; max-width: 360px; }}
             .modal-content h3 {{ margin-top: 0; font-size: 18px; color: #fff; }}
             .modal-content p {{ font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }}
-            .close-modal {{
-                background: var(--card-inner); border: 1px solid var(--border); color: #fff;
-                padding: 10px; width: 100%; border-radius: 8px; margin-top: 10px; cursor: pointer; font-weight:bold;
-            }}
+            .close-modal {{ background: var(--card-inner); border: 1px solid var(--border); color: #fff; padding: 10px; width: 100%; border-radius: 8px; margin-top: 10px; cursor: pointer; font-weight:bold; }}
         </style>
     </head>
     <body>
@@ -327,17 +336,14 @@ async def webapp_handler(request):
                         <option value="Azerbaijan|AZN|{EXCHANGE_RATES['AZN']}">🇦🇿 Азербайджан (AZN)</option>
                     </select>
                 </div>
-
                 <div class="form-group">
                     <label>Сумма отправки (в рублях)</label>
                     <input type="number" id="amount" placeholder="Макс. 25 000 ₽" oninput="calculateLocal()">
                 </div>
-
                 <div class="calc-box">
                     <span>Получатель заберет:</span>
                     <span class="calc-val" id="totalLocal">0.00 UZS</span>
                 </div>
-
                 <div class="form-group">
                     <input type="text" id="recName" placeholder="ФИО получателя">
                 </div>
@@ -348,7 +354,6 @@ async def webapp_handler(request):
                 <div class="security-notice">
                     🛡 <b>Безопасность:</b> Перевод должен осуществляться строго с вашей личной карты. Третьи лица не допускаются.
                 </div>
-
                 <div class="checkbox-group">
                     <input type="checkbox" id="termsCheck">
                     <label for="termsCheck" style="text-transform: none; display: inline; color: var(--text-muted); cursor: pointer;">
@@ -357,9 +362,22 @@ async def webapp_handler(request):
                 </div>
 
                 <button class="main-btn" onclick="submitForm()">Продолжить</button>
+                <button class="secondary-btn" onclick="loadHistory()">🕒 Моя история переводов</button>
             </div>
 
-            <!-- ЭКРАН 2: ОПЛАТА -->
+            <!-- ЭКРАН 2: ИСТОРИЯ (ПРОФИЛЬ) -->
+            <div id="screenHistory" class="screen">
+                <h2>Моя история</h2>
+                <div class="subtitle">Последние транзакции</div>
+                
+                <div id="historyContainer">
+                    <div class="spinner" style="text-align:center; font-size:24px; color:#fff;">⏳</div>
+                </div>
+
+                <button class="secondary-btn" onclick="showScreen('screenForm')" style="margin-top: 20px;">← Назад к переводу</button>
+            </div>
+
+            <!-- ЭКРАН 3: ОПЛАТА -->
             <div id="screenPay" class="screen">
                 <h2>Оплата перевода</h2>
                 <div class="subtitle">Защищенный шлюз</div>
@@ -369,13 +387,11 @@ async def webapp_handler(request):
                     <div style="font-size: 11px; color: var(--text-muted);">К ОПЛАТЕ:</div>
                     <div id="payRubSum" style="font-size: 20px; font-weight: bold; color: #c084fc; margin-top: 4px;">0 ₽</div>
                 </div>
-
                 <div class="req-box">
                     <div style="font-size: 11px; color: var(--text-muted);">ОБЯЗАТЕЛЬНЫЙ КОММЕНТАРИЙ К ПЕРЕВОДУ:</div>
                     <div id="transferCommentText" style="font-size: 18px; font-weight: bold; margin-top: 4px; color: #f59e0b;">KORO-0000</div>
                     <button class="copy-btn" id="copyCommentBtn" onclick="copyComment()">📋 Скопировать комментарий</button>
                 </div>
-
                 <div class="req-box">
                     <div style="font-size: 11px; color: var(--text-muted);">РЕКВИЗИТЫ ({RECEIVE_BANK}):</div>
                     <div style="font-size: 16px; font-weight: bold; margin-top: 4px; word-break: break-all;">{RECEIVE_CARD}</div>
@@ -386,13 +402,11 @@ async def webapp_handler(request):
                 <button class="main-btn" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(34,197,94,0.4);">Я оплатил(а)</button>
             </div>
 
-            <!-- ЭКРАН 3: УСПЕХ -->
+            <!-- ЭКРАН 4: УСПЕХ -->
             <div id="screenWait" class="screen" style="text-align: center;">
                 <div style="font-size: 40px; margin: 20px 0;">✅</div>
                 <h3 style="margin: 0 0 8px 0;">Заявка отправлена!</h3>
-                <p style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
-                    Мы проверяем поступление средств. Уведомление об успешном переводе придет вам в этот чат.
-                </p>
+                <p style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">Мы проверяем поступление средств. Уведомление придет вам в этот чат.</p>
                 <button class="main-btn" onclick="tg.close()" style="margin-top: 20px; background: var(--card-inner); border: 1px solid var(--accent); box-shadow: none;">Вернуться в чат</button>
             </div>
         </div>
@@ -400,10 +414,9 @@ async def webapp_handler(request):
         <!-- МОДАЛЬНОЕ ОКНО -->
         <div id="termsModal" class="modal-overlay">
             <div class="modal-content">
-                <h3>Условия использования (Оферта)</h3>
+                <h3>Условия использования</h3>
                 <p><b>1. Общие положения.</b> Koro Pay предоставляет услуги по содействию в P2P-переводах. Пользователь гарантирует легальное происхождение средств.</p>
                 <p><b>2. Безопасность.</b> Запрещено использование сервиса в мошеннических целях. Перевод должен осуществляться исключительно с личных счетов.</p>
-                <p><b>3. Ответственность.</b> Сервис не несет ответственности за переводы по ошибочно указанным реквизитам.</p>
                 <button class="close-modal" onclick="closeModal()">Понятно</button>
             </div>
         </div>
@@ -415,6 +428,11 @@ async def webapp_handler(request):
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
 
             window.onload = function() {{ calculateLocal(); }};
+
+            function showScreen(id) {{
+                document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+                document.getElementById(id).classList.add('active');
+            }}
 
             function openModal(e) {{ e.preventDefault(); e.stopPropagation(); document.getElementById('termsModal').style.display = 'flex'; }}
             function closeModal() {{ document.getElementById('termsModal').style.display = 'none'; }}
@@ -439,6 +457,40 @@ async def webapp_handler(request):
                 setTimeout(() => {{ btn.textContent = '📋 Скопировать комментарий'; }}, 2000);
             }}
 
+            async function loadHistory() {{
+                showScreen('screenHistory');
+                let user_id = tg.initDataUnsafe?.user?.id || 0;
+                let container = document.getElementById('historyContainer');
+                
+                try {{
+                    let response = await fetch('/api/history?user_id=' + user_id);
+                    let res = await response.json();
+                    
+                    if(res.data.length === 0) {{
+                        container.innerHTML = '<div class="empty-state">У вас еще нет переводов</div>';
+                        return;
+                    }}
+
+                    container.innerHTML = '';
+                    res.data.forEach(tx => {{
+                        let sClass = tx.status === 'SUCCESS' ? 'h-success' : (tx.status === 'REJECTED' ? 'h-reject' : 'h-pending');
+                        let sText = tx.status === 'SUCCESS' ? 'Успешно' : (tx.status === 'REJECTED' ? 'Отклонено' : 'В обработке');
+                        
+                        container.innerHTML += `
+                            <div class="history-item">
+                                <div class="h-info">
+                                    <div>${{tx.rub}} ➡️ ${{tx.local}} ${{tx.currency}}</div>
+                                    <div>ID: ${{tx.tx_id}} • ${{tx.country}}</div>
+                                </div>
+                                <div class="h-status ${{sClass}}">${{sText}}</div>
+                            </div>
+                        `;
+                    }});
+                }} catch(e) {{
+                    container.innerHTML = '<div class="empty-state">Ошибка загрузки истории</div>';
+                }}
+            }}
+
             function startTimer(duration) {{
                 let timer = duration, minutes, seconds;
                 clearInterval(timerInterval);
@@ -460,8 +512,7 @@ async def webapp_handler(request):
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
                 document.getElementById('payRubSum').textContent = enteredRub + ' ₽';
                 
-                document.getElementById('screenForm').classList.remove('active');
-                document.getElementById('screenPay').classList.add('active');
+                showScreen('screenPay');
                 startTimer(900);
             }}
 
@@ -485,8 +536,7 @@ async def webapp_handler(request):
                     let result = await response.json();
                     if (!response.ok) {{ alert(result.message || 'Ошибка обработки.'); location.reload(); return; }}
                     
-                    document.getElementById('screenPay').classList.remove('active');
-                    document.getElementById('screenWait').classList.add('active');
+                    showScreen('screenWait');
                 }} catch (e) {{ alert('Ошибка связи с сервером.'); }}
             }}
         </script>
@@ -501,6 +551,7 @@ async def main():
   app = web.Application()
   app.router.add_get("/", webapp_handler)
   app.router.add_post("/api/order", api_order_handler)
+  app.router.add_get("/api/history", api_history_handler)
   runner = web.AppRunner(app)
   await runner.setup()
   site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080)))
