@@ -25,7 +25,6 @@ RECEIVE_CARD = "2200 3204 4647 4787"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
-# Базовые курсы (обновляются автоматически)
 EXCHANGE_RATES = {"UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018}
 COMMISSION_MARGIN = 0.95 
 
@@ -35,7 +34,6 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ SQLite ===
 def init_db():
     conn = sqlite3.connect('koropay.db')
     c = conn.cursor()
@@ -62,7 +60,6 @@ def add_strike(user_id):
     conn.commit()
     conn.close()
 
-# Парсер курсов
 async def update_rates():
     global EXCHANGE_RATES
     while True:
@@ -80,7 +77,6 @@ async def update_rates():
         except Exception as e:
             logging.error(f"Ошибка обновления курсов: {e}")
         await asyncio.sleep(3600)
-
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -108,7 +104,6 @@ async def cmd_start(message: types.Message):
         reply_markup=web_app_kb, parse_mode="HTML"
     )
 
-# API для выдачи истории внутри Web App
 async def api_history_handler(request):
     try:
         user_id = int(request.rel_url.query.get('user_id', 0))
@@ -127,7 +122,6 @@ async def api_history_handler(request):
         return web.json_response({"status": "success", "data": result})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=400)
-
 
 async def api_order_handler(request):
     try:
@@ -187,7 +181,6 @@ async def api_order_handler(request):
         logging.error(f"Ошибка API: {e}")
         return web.json_response({"status": "error", "message": str(e)}, status=400)
 
-
 @dp.callback_query(F.data.startswith("approve_"))
 async def process_approve(callback: types.CallbackQuery):
     parts = callback.data.split("_")
@@ -225,7 +218,6 @@ async def process_reject(callback: types.CallbackQuery):
     except: pass
     await callback.answer("Отклонено!")
 
-
 async def webapp_handler(request):
   html_content = f"""
     <!DOCTYPE html>
@@ -235,13 +227,22 @@ async def webapp_handler(request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <title>Koro Pay</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
             :root {{
-                --bg: #000000; --surface: #1C1C1E; --surface-hover: #2C2C2E;
-                --primary: #0A84FF; --primary-grad: linear-gradient(135deg, #0A84FF 0%, #5E5CE6 100%);
-                --text: #FFFFFF; --text-sec: #EBEBF599; --border: #38383A;
-                --success: #30D158; --danger: #FF453A; --warning: #FF9F0A;
+                /* Фирменные цвета логотипа Koro Pay */
+                --bg: #05050C;
+                --surface: #121322;
+                --surface-hover: #1C1D33;
+                --primary: #9667E0;
+                --primary-light: #7C83FD;
+                --primary-grad: linear-gradient(135deg, #7C83FD 0%, #9667E0 100%);
+                --text: #FFFFFF;
+                --text-sec: #8A8E9E;
+                --border: rgba(124, 131, 253, 0.15);
+                --success: #30D158;
+                --danger: #FF453A;
+                --warning: #FF9F0A;
             }}
             * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
             body {{
@@ -250,96 +251,96 @@ async def webapp_handler(request):
                 overflow: hidden;
             }}
             
-            /* Header */
-            .header {{ padding: 20px 20px 10px; display: flex; justify-content: space-between; align-items: center; }}
-            .header-title {{ font-size: 22px; font-weight: 700; }}
-            .user-greeting {{ font-size: 13px; color: var(--text-sec); }}
+            /* Header & Logo */
+            .header {{ padding: 20px 20px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); }}
+            .logo-container {{ display: flex; align-items: center; gap: 12px; }}
+            .logo-img {{ width: 42px; height: 42px; border-radius: 10px; object-fit: cover; background: var(--surface); }}
+            .header-title {{ font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }}
+            .header-title span {{ color: var(--primary); }}
+            .tagline {{ font-size: 11px; color: var(--text-sec); letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }}
             
-            /* Main Content Area */
-            .content {{ flex: 1; overflow-y: auto; padding: 10px 20px 80px; }}
+            .content {{ flex: 1; overflow-y: auto; padding: 15px 20px 80px; }}
             .screen {{ display: none; animation: fadeIn 0.3s ease; }}
             .screen.active {{ display: block; }}
             @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
 
-            /* Banking Cards & Forms */
-            .card-panel {{ background: var(--surface); border-radius: 16px; padding: 16px; margin-bottom: 16px; border: 1px solid var(--border); }}
+            .card-panel {{ background: var(--surface); border-radius: 16px; padding: 18px; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }}
             .input-group {{ margin-bottom: 16px; }}
             .input-group:last-child {{ margin-bottom: 0; }}
-            label {{ display: block; font-size: 12px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }}
+            label {{ display: block; font-size: 11px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }}
             
             input, select {{
-                width: 100%; padding: 14px; background: var(--bg); border: 1px solid var(--border);
+                width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border);
                 border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif;
-                transition: border-color 0.2s; outline: none;
+                transition: border-color 0.2s; outline: none; font-weight: 500;
             }}
-            input:focus, select:focus {{ border-color: var(--primary); }}
+            input:focus, select:focus {{ border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }}
             
-            /* Quick Amounts */
             .quick-amounts {{ display: flex; gap: 8px; margin-top: 10px; }}
             .quick-btn {{
-                flex: 1; padding: 8px 0; background: var(--surface-hover); color: var(--text);
-                border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer;
+                flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light);
+                border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s;
             }}
+            .quick-btn:active {{ background: var(--primary); color: #fff; }}
             
-            /* Receipt Details */
-            .receipt-row {{ display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 8px; color: var(--text-sec); }}
-            .receipt-row.total {{ font-size: 18px; font-weight: 700; color: var(--text); margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); margin-bottom: 0; }}
+            .receipt-row {{ display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 10px; color: var(--text-sec); }}
+            .receipt-row.total {{ font-size: 18px; font-weight: 800; color: var(--text); margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); margin-bottom: 0; }}
             
-            /* Buttons */
             .btn-primary {{
                 width: 100%; padding: 16px; background: var(--primary-grad); color: #fff;
                 border: none; border-radius: 14px; font-size: 16px; font-weight: 700;
                 cursor: pointer; display: flex; justify-content: center; align-items: center;
-                box-shadow: 0 4px 15px rgba(10, 132, 255, 0.3);
+                box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s;
             }}
+            .btn-primary:active {{ opacity: 0.8; }}
             .btn-copy {{
-                background: var(--surface-hover); color: var(--primary); padding: 10px;
-                border: none; border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 10px; cursor: pointer;
+                background: var(--surface-hover); color: var(--primary-light); padding: 12px;
+                border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer;
             }}
 
-            /* Security & Terms */
-            .checkbox-wrapper {{ display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 16px; }}
-            .checkbox-wrapper input {{ width: 20px; height: 20px; accent-color: var(--primary); }}
-            .link {{ color: var(--primary); text-decoration: none; font-weight: 600; cursor: pointer; }}
+            .checkbox-wrapper {{ display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }}
+            .checkbox-wrapper input {{ width: 22px; height: 22px; accent-color: var(--primary); }}
+            .link {{ color: var(--primary-light); text-decoration: none; font-weight: 600; cursor: pointer; }}
             
-            /* Bottom Navigation */
             .bottom-nav {{
-                position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(28, 28, 30, 0.95);
+                position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(5, 5, 12, 0.9);
                 backdrop-filter: blur(10px); border-top: 1px solid var(--border);
-                display: flex; justify-content: space-around; padding: 10px 0 20px; z-index: 50;
+                display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50;
             }}
-            .nav-item {{ display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; }}
-            .nav-item.active {{ color: var(--primary); }}
-            .nav-icon {{ font-size: 20px; margin-bottom: 4px; }}
+            .nav-item {{ display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; }}
+            .nav-item.active {{ color: var(--primary-light); }}
+            .nav-icon {{ font-size: 22px; margin-bottom: 4px; }}
             
-            /* History List */
             .history-card {{ display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }}
             .history-card:last-child {{ border-bottom: none; padding-bottom: 0; }}
-            .h-left .h-title {{ font-size: 15px; font-weight: 600; margin-bottom: 4px; }}
+            .h-left .h-title {{ font-size: 15px; font-weight: 600; margin-bottom: 4px; color: var(--text); }}
             .h-left .h-desc {{ font-size: 12px; color: var(--text-sec); }}
             .h-right {{ text-align: right; }}
-            .h-right .h-amount {{ font-size: 15px; font-weight: 700; margin-bottom: 4px; }}
-            .badge {{ font-size: 10px; font-weight: 700; padding: 4px 8px; border-radius: 6px; display: inline-block; }}
+            .h-right .h-amount {{ font-size: 15px; font-weight: 700; margin-bottom: 4px; color: var(--text); }}
+            .badge {{ font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 6px; display: inline-block; text-transform: uppercase; }}
             .b-pending {{ background: rgba(255, 159, 10, 0.15); color: var(--warning); }}
             .b-success {{ background: rgba(48, 209, 88, 0.15); color: var(--success); }}
             .b-reject {{ background: rgba(255, 69, 58, 0.15); color: var(--danger); }}
 
-            /* Modals */
-            .modal {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: flex-end; }}
-            .modal-content {{ background: var(--surface); width: 100%; border-radius: 20px 20px 0 0; padding: 24px; max-height: 80vh; overflow-y: auto; animation: slideUp 0.3s; }}
+            .modal {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: flex-end; }}
+            .modal-content {{ background: var(--surface); width: 100%; border-radius: 24px 24px 0 0; padding: 24px; max-height: 85vh; overflow-y: auto; animation: slideUp 0.3s; border-top: 1px solid var(--border); }}
             @keyframes slideUp {{ from {{ transform: translateY(100%); }} to {{ transform: translateY(0); }} }}
             .modal-close {{ width: 40px; height: 5px; background: var(--border); border-radius: 3px; margin: 0 auto 20px; }}
-            .legal-text h3 {{ margin-top: 0; font-size: 18px; }}
+            .legal-text h3 {{ margin-top: 0; font-size: 20px; font-weight: 800; }}
             .legal-text p {{ font-size: 13px; color: var(--text-sec); line-height: 1.6; margin-bottom: 12px; }}
         </style>
     </head>
     <body>
         <div class="header">
-            <div>
-                <div class="user-greeting" id="userGreeting">Добрый день</div>
-                <div class="header-title">Koro Pay</div>
+            <div class="logo-container">
+                <!-- Загрузи картинку logo.png в свой репозиторий GitHub, чтобы она появилась здесь -->
+                <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/logo.png" alt="Logo" class="logo-img" onerror="this.style.display='none'">
+                <div>
+                    <div class="header-title">Koro<span>Pay</span></div>
+                    <div class="tagline">Платежи. Переводы. Больше.</div>
+                </div>
             </div>
-            <div style="width: 40px; height: 40px; border-radius: 20px; background: var(--surface-hover); display: flex; justify-content: center; align-items: center; font-size: 20px;">
+            <div style="width: 36px; height: 36px; border-radius: 12px; background: var(--surface-hover); border: 1px solid var(--border); display: flex; justify-content: center; align-items: center; font-size: 18px;">
                 👤
             </div>
         </div>
@@ -349,7 +350,7 @@ async def webapp_handler(request):
             <div id="tab-transfer" class="screen active">
                 <div class="card-panel">
                     <div class="input-group">
-                        <label>Направление перевода</label>
+                        <label>Страна зачисления</label>
                         <select id="country" onchange="calculateParams()">
                             <option value="Uzbekistan|UZS|{EXCHANGE_RATES['UZS']}">🇺🇿 Узбекистан (UZS)</option>
                             <option value="Tajikistan|TJS|{EXCHANGE_RATES['TJS']}">🇹🇯 Таджикистан (TJS)</option>
@@ -358,7 +359,7 @@ async def webapp_handler(request):
                         </select>
                     </div>
                     <div class="input-group">
-                        <label>Сумма списания (₽)</label>
+                        <label>Сумма перевода (₽)</label>
                         <input type="number" id="amount" placeholder="0" oninput="calculateParams()">
                         <div class="quick-amounts">
                             <button class="quick-btn" onclick="setAmount(1000)">1 000</button>
@@ -371,7 +372,7 @@ async def webapp_handler(request):
 
                 <div class="card-panel">
                     <div class="input-group">
-                        <label>Карта получателя</label>
+                        <label>Номер карты</label>
                         <input type="tel" id="recCard" placeholder="0000 0000 0000 0000" maxlength="19" oninput="formatCard(this)">
                     </div>
                     <div class="input-group">
@@ -382,23 +383,23 @@ async def webapp_handler(request):
 
                 <div class="card-panel">
                     <div class="receipt-row">
-                        <span>Текущий курс</span>
-                        <span id="rateDisplay">0.00</span>
+                        <span>Актуальный курс</span>
+                        <span id="rateDisplay" style="color: var(--primary-light); font-weight: 600;">0.00</span>
                     </div>
                     <div class="receipt-row">
-                        <span>Комиссия сервиса</span>
-                        <span style="color: var(--success);">0 ₽</span>
+                        <span>Комиссия за перевод</span>
+                        <span style="color: var(--success); font-weight: 600;">0 ₽</span>
                     </div>
                     <div class="receipt-row total">
-                        <span>К зачислению</span>
-                        <span id="totalLocal">0.00 UZS</span>
+                        <span>Сумма к зачислению</span>
+                        <span id="totalLocal" style="color: var(--primary-light);">0.00 UZS</span>
                     </div>
                 </div>
 
                 <div class="checkbox-wrapper">
                     <input type="checkbox" id="termsCheck">
                     <label for="termsCheck" style="margin: 0; text-transform: none; letter-spacing: 0;">
-                        Я подтверждаю легальность средств и согласен с <span class="link" onclick="openModal('ofertaModal')">Условиями оферты</span>.
+                        Я подтверждаю легальность средств и согласен с <span class="link" onclick="openModal('ofertaModal')">Офертой сервиса</span>.
                     </label>
                 </div>
 
@@ -407,66 +408,66 @@ async def webapp_handler(request):
 
             <!-- Вкладка 2: ОПЛАТА (ШЛЮЗ) -->
             <div id="tab-payment" class="screen">
-                <div style="text-align: center; margin-bottom: 20px;">
-                    <div style="font-size: 40px; margin-bottom: 10px;">🛡</div>
-                    <h2 style="margin:0;">Оплата перевода</h2>
-                    <div style="color: var(--warning); font-weight: 700; margin-top: 10px;" id="timerDisplay">15:00</div>
+                <div style="text-align: center; margin-bottom: 24px;">
+                    <div style="font-size: 48px; margin-bottom: 10px; filter: drop-shadow(0 0 15px var(--primary-light));">🛡</div>
+                    <h2 style="margin:0; font-weight: 800;">Безопасный шлюз</h2>
+                    <div style="color: var(--warning); font-weight: 700; margin-top: 10px; font-size: 18px;" id="timerDisplay">15:00</div>
+                </div>
+
+                <div class="card-panel" style="text-align: center;">
+                    <label style="text-align: center;">К оплате</label>
+                    <div id="payRubSum" style="font-size: 32px; font-weight: 800; color: #fff;">0 ₽</div>
+                </div>
+
+                <div class="card-panel" style="border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05);">
+                    <label style="color: var(--primary-light);">Обязательный комментарий</label>
+                    <div id="transferCommentText" style="font-size: 24px; font-weight: 800; color: #fff;">KORO-0000</div>
+                    <button class="btn-copy" id="btnCopyComment" onclick="copyText(currentOrderCode, 'btnCopyComment')" style="background: var(--primary-grad); color: #fff; border: none;">Скопировать код</button>
                 </div>
 
                 <div class="card-panel">
-                    <label>Сумма к оплате</label>
-                    <div id="payRubSum" style="font-size: 28px; font-weight: 800; color: var(--primary);">0 ₽</div>
-                </div>
-
-                <div class="card-panel">
-                    <label>Реквизиты для перевода ({RECEIVE_BANK})</label>
-                    <div style="font-size: 20px; font-weight: 700; letter-spacing: 1px; margin-bottom: 4px;">{RECEIVE_CARD}</div>
-                    <div style="font-size: 13px; color: var(--text-sec);">{RECEIVE_HOLDER}</div>
+                    <label>Реквизиты ({RECEIVE_BANK})</label>
+                    <div style="font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px;">{RECEIVE_CARD}</div>
+                    <div style="font-size: 14px; color: var(--text-sec); font-weight: 500;">{RECEIVE_HOLDER}</div>
                     <button class="btn-copy" id="btnCopyCard" onclick="copyText('{RECEIVE_CARD}', 'btnCopyCard')">Скопировать номер карты</button>
                 </div>
 
-                <div class="card-panel" style="border-color: var(--warning);">
-                    <label style="color: var(--warning);">Комментарий к переводу (Обязательно!)</label>
-                    <div id="transferCommentText" style="font-size: 20px; font-weight: 700;">KORO-0000</div>
-                    <button class="btn-copy" id="btnCopyComment" onclick="copyText(currentOrderCode, 'btnCopyComment')" style="color: var(--warning);">Скопировать комментарий</button>
-                </div>
-
-                <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
+                <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Платеж выполнен</button>
             </div>
 
             <!-- Вкладка 3: ИСТОРИЯ -->
             <div id="tab-history" class="screen">
-                <h2 style="margin-bottom: 20px;">История операций</h2>
+                <h2 style="margin-bottom: 20px; font-weight: 800;">История операций</h2>
                 <div class="card-panel" id="historyContainer">
-                    <div style="text-align:center; padding: 20px; color: var(--text-sec);">⏳ Загрузка...</div>
+                    <div style="text-align:center; padding: 20px; color: var(--text-sec);">⏳ Загрузка данных...</div>
                 </div>
             </div>
 
             <!-- Вкладка 4: ПРОФИЛЬ -->
             <div id="tab-profile" class="screen">
-                <h2 style="margin-bottom: 20px;">Профиль</h2>
+                <h2 style="margin-bottom: 20px; font-weight: 800;">Мой Профиль</h2>
                 <div class="card-panel">
-                    <div class="receipt-row" style="padding: 12px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;" onclick="openModal('ofertaModal')">
-                        <span style="font-weight:600; color:var(--text);">📄 Условия оферты</span>
-                        <span>›</span>
+                    <div class="receipt-row" style="padding: 14px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;" onclick="openModal('ofertaModal')">
+                        <span style="font-weight:600; color:var(--text); display:flex; align-items:center; gap:8px;">📄 Договор Оферты</span>
+                        <span style="color:var(--primary-light);">›</span>
                     </div>
-                    <div class="receipt-row" style="padding: 12px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;">
-                        <span style="font-weight:600; color:var(--text);">🎧 Поддержка</span>
-                        <span>›</span>
+                    <div class="receipt-row" style="padding: 14px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;" onclick="tg.openTelegramLink('https://t.me/your_admin_username')">
+                        <span style="font-weight:600; color:var(--text); display:flex; align-items:center; gap:8px;">🎧 Служба поддержки</span>
+                        <span style="color:var(--primary-light);">›</span>
                     </div>
-                    <div class="receipt-row" style="padding: 12px 0; margin:0;">
-                        <span style="font-weight:600; color:var(--text);">Версия приложения</span>
-                        <span>2.0.1</span>
+                    <div class="receipt-row" style="padding: 14px 0; margin:0;">
+                        <span style="font-weight:600; color:var(--text);">Версия системы</span>
+                        <span style="color:var(--text-sec); font-family:monospace;">KoroPay v3.0 Neo</span>
                     </div>
                 </div>
             </div>
 
             <!-- Экран успеха -->
             <div id="tab-success" class="screen" style="text-align: center; padding-top: 60px;">
-                <div style="font-size: 60px; margin-bottom: 20px;">✅</div>
-                <h2 style="margin-bottom: 10px;">Средства в обработке</h2>
-                <p style="color: var(--text-sec); font-size: 14px; line-height: 1.5; margin-bottom: 30px;">Мы проверяем ваш платеж. Уведомление о зачислении придет в чат с ботом.</p>
-                <button class="btn-primary" onclick="tg.close()">Вернуться в Telegram</button>
+                <div style="font-size: 70px; margin-bottom: 24px; filter: drop-shadow(0 0 20px var(--success));">✅</div>
+                <h2 style="margin-bottom: 12px; font-weight: 800;">Средства в обработке</h2>
+                <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px;">Ваш платеж успешно зарегистрирован и передан в финансовый отдел. Чек поступит в этот чат.</p>
+                <button class="btn-primary" onclick="tg.close()">Отлично</button>
             </div>
         </div>
 
@@ -490,13 +491,13 @@ async def webapp_handler(request):
         <div id="ofertaModal" class="modal" onclick="if(event.target==this) closeModal('ofertaModal')">
             <div class="modal-content legal-text">
                 <div class="modal-close"></div>
-                <h3>Договор-оферта на оказание услуг P2P-переводов</h3>
-                <p><b>1. Предмет соглашения.</b> Настоящая Оферта является официальным предложением сервиса Koro Pay (далее — «Сервис») по предоставлению информационно-технологического шлюза для осуществления международных P2P переводов.</p>
+                <h3>Договор-оферта сервиса Koro Pay</h3>
+                <p><b>1. Предмет соглашения.</b> Настоящая Оферта является официальным предложением сервиса Koro Pay по предоставлению информационно-технологического шлюза для осуществления международных P2P переводов.</p>
                 <p><b>2. Противодействие мошенничеству (AML).</b> Пользователь гарантирует легальное происхождение переводимых средств. Строго запрещено использование карт третьих лиц. При выявлении подозрительных операций Сервис вправе заморозить заявку и запросить верификацию (KYC).</p>
                 <p><b>3. Финансовые условия.</b> Расчетный курс фиксируется в момент оформления заявки сроком на 15 минут. Комиссия Сервиса уже включена в отображаемый курс конвертации.</p>
                 <p><b>4. Порядок исполнения и возвраты.</b> Обязательства Сервиса считаются выполненными в момент отправки средств по указанным Пользователем реквизитам. Возврат средств после успешной отправки в иностранный банк невозможен.</p>
                 <p><b>5. Ответственность.</b> Сервис не несет финансовой ответственности за ошибки, допущенные Пользователем при вводе номера карты или ФИО получателя.</p>
-                <button class="btn-primary" style="margin-top: 20px;" onclick="closeModal('ofertaModal')">Ознакомлен</button>
+                <button class="btn-primary" style="margin-top: 24px;" onclick="closeModal('ofertaModal')">Я ознакомлен</button>
             </div>
         </div>
 
@@ -508,51 +509,36 @@ async def webapp_handler(request):
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0;
             let currentOrderCode = '', timerInterval;
 
-            // Установка имени пользователя
             window.onload = function() {{
-                let user = tg.initDataUnsafe?.user;
-                if(user && user.first_name) {{
-                    document.getElementById('userGreeting').textContent = 'Добрый день, ' + user.first_name;
-                }}
                 calculateParams();
             }};
 
-            // Вибрация
-            function haptic() {{
-                if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
-            }}
+            function haptic() {{ if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); }}
 
-            // Навигация
             function switchTab(tabId, el) {{
                 haptic();
                 document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
                 document.getElementById(tabId).classList.add('active');
-                
                 if(el) {{
                     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
                     el.classList.add('active');
                 }}
             }}
 
-            // Модалки
             function openModal(id) {{ haptic(); document.getElementById(id).style.display = 'flex'; }}
             function closeModal(id) {{ haptic(); document.getElementById(id).style.display = 'none'; }}
 
-            // Форматирование карты (пробелы каждые 4 цифры)
             function formatCard(input) {{
                 let val = input.value.replace(/\\D/g, '');
-                let formatted = val.match(/.{{1,4}}/g)?.join(' ') || '';
-                input.value = formatted;
+                input.value = val.match(/.{{1,4}}/g)?.join(' ') || '';
             }}
 
-            // Быстрые суммы
             function setAmount(val) {{
                 haptic();
                 document.getElementById('amount').value = val;
                 calculateParams();
             }}
 
-            // Расчеты
             function calculateParams() {{
                 let val = document.getElementById('country').value.split('|');
                 currentCurr = val[1]; 
@@ -567,7 +553,6 @@ async def webapp_handler(request):
                 document.getElementById('totalLocal').textContent = displayVal + ' ' + currentCurr;
             }}
 
-            // Копирование
             function copyText(text, btnId) {{
                 haptic();
                 navigator.clipboard.writeText(text.replace(/\\s+/g, ''));
@@ -577,7 +562,6 @@ async def webapp_handler(request):
                 setTimeout(() => {{ btn.textContent = origText; }}, 2000);
             }}
 
-            // Загрузка Истории
             async function loadHistory() {{
                 let user_id = tg.initDataUnsafe?.user?.id || 0;
                 let container = document.getElementById('historyContainer');
@@ -586,7 +570,7 @@ async def webapp_handler(request):
                     let res = await response.json();
                     
                     if(res.data.length === 0) {{
-                        container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--text-sec);">Список операций пуст</div>';
+                        container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--text-sec); font-weight: 500;">У вас пока нет операций</div>';
                         return;
                     }}
 
@@ -599,7 +583,7 @@ async def webapp_handler(request):
                             <div class="history-card">
                                 <div class="h-left">
                                     <div class="h-title">${{tx.country}}</div>
-                                    <div class="h-desc">ID: ${{tx.tx_id}}</div>
+                                    <div class="h-desc">Код: ${{tx.tx_id}}</div>
                                 </div>
                                 <div class="h-right">
                                     <div class="h-amount">${{tx.rub}} ₽</div>
@@ -613,7 +597,6 @@ async def webapp_handler(request):
                 }}
             }}
 
-            // Таймер
             function startTimer(duration) {{
                 let timer = duration, minutes, seconds;
                 clearInterval(timerInterval);
@@ -625,7 +608,6 @@ async def webapp_handler(request):
                 }}, 1000);
             }}
 
-            // Создание заявки
             async function initiateTransfer() {{
                 haptic();
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
@@ -640,12 +622,11 @@ async def webapp_handler(request):
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 
-                document.getElementById('bottomNav').style.display = 'none'; // Прячем меню
+                document.getElementById('bottomNav').style.display = 'none';
                 switchTab('tab-payment', null);
                 startTimer(900);
             }}
 
-            // Подтверждение оплаты
             async function confirmPayment() {{
                 haptic();
                 let user = tg.initDataUnsafe?.user || {{}};
@@ -676,7 +657,6 @@ async def webapp_handler(request):
     """
   return web.Response(text=html_content, content_type="text/html")
 
-
 async def main():
   init_db()
   app = web.Application()
@@ -692,7 +672,6 @@ async def main():
   
   logging.info(f"Сервер Koro Pay запущен...")
   await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
   asyncio.run(main())
