@@ -331,6 +331,11 @@ async def webapp_handler(request):
             let calculatedLocal = 0;
             let timerInterval;
 
+            // Запускаем расчет сразу при открытии, чтобы подхватить дефолтную валюту
+            window.onload = function() {{
+                calculateLocal();
+            }};
+
             function calculateLocal() {{
                 let val = document.getElementById('country').value.split('|');
                 currentCurr = val[1];
@@ -426,7 +431,7 @@ async def webapp_handler(request):
                             recipient_card: card,
                             username: user.username || 'Аноним',
                             user_id: user.id || 0
-                        }}
+                        }})
                     }});
                     
                     let result = await response.json();
