@@ -43,7 +43,6 @@ dp = Dispatcher()
 def init_db():
     conn = sqlite3.connect('koropay.db')
     c = conn.cursor()
-    # Создаем таблицы с чистой структурой без конфликтов
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (user_id INTEGER PRIMARY KEY, username TEXT, strikes INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS transfers 
@@ -90,37 +89,52 @@ def generate_receipt_image(tx_id, rub, local, currency, name, card):
     if not os.path.exists(font_path):
         urllib.request.urlretrieve("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Medium.ttf", font_path)
     
-    font_title = ImageFont.truetype(font_path, 36)
-    font_text = ImageFont.truetype(font_path, 22)
-    font_small = ImageFont.truetype(font_path, 16)
+    font_text = ImageFont.truetype(font_path, 20)
+    font_small = ImageFont.truetype(font_path, 15)
 
-    img = Image.new('RGB', (600, 750), color='#05050C')
+    # Холст в фирменном темном стиле Koro Pay (#05050C)
+    img = Image.new('RGB', (600, 800), color='#05050C')
     draw = ImageDraw.Draw(img)
 
-    draw.text((300, 60), "Koro Pay", font=font_title, fill='#9667E0', anchor="mm")
-    draw.text((300, 100), "ОФИЦИАЛЬНЫЙ ЧЕК", font=font_small, fill='#8A8E9E', anchor="mm")
-    draw.line((50, 140, 550, 140), fill='#1C1D33', width=3)
+    # Пытаемся наложить оригинальный логотип из файла logo.png
+    logo_drawn = False
+    if os.path.exists("logo.png"):
+        try:
+            logo = Image.open("logo.png").convert("RGBA")
+            logo.thumbnail((80, 80))
+            img.paste(logo, (260, 30), logo)
+            logo_drawn = True
+        except Exception as e:
+            logging.error(f"Не удалось наложить логотип на чек: {e}")
 
-    y = 180
-    spacing = 65
+    # Если логотипа нет, рисуем текстовый бренд
+    if not logo_drawn:
+        font_logo = ImageFont.truetype(font_path, 32)
+        draw.text((300, 50), "Koro Pay", font=font_logo, fill='#9667E0', anchor="mm")
+
+    draw.text((300, 125), "ОФИЦИАЛЬНЫЙ ЧЕК ПЕРЕВОДА", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.line((40, 155, 560, 155), fill='#1C1D33', width=2)
+
+    y = 190
+    spacing = 62
     
     details = [
-        ("Статус перевода:", "ВЫПОЛНЕН ✅", '#30D158'),
+        ("Статус:", "ВЫПОЛНЕН (ДОСТАВЛЕНО) ✅", '#30D158'),
         ("Код транзакции:", tx_id, '#FFFFFF'),
         ("Дата и время:", datetime.now().strftime("%d.%m.%Y %H:%M"), '#FFFFFF'),
         ("Сумма списания:", f"{rub}", '#FFFFFF'),
         ("Сумма зачисления:", f"{local} {currency}", '#7C83FD'),
-        ("ФИО получателя:", name, '#FFFFFF'),
-        ("Карта получателя:", card, '#FFFFFF')
+        ("Получатель:", name, '#FFFFFF'),
+        ("Карта назначения:", card, '#FFFFFF')
     ]
 
     for label, val, color in details:
-        draw.text((50, y), label, font=font_text, fill='#8A8E9E')
-        draw.text((550, y), val, font=font_text, fill=color, anchor="ra")
+        draw.text((40, y), label, font=font_text, fill='#8A8E9E')
+        draw.text((560, y), val, font=font_text, fill=color, anchor="ra")
         y += spacing
 
-    draw.line((50, y, 550, y), fill='#1C1D33', width=3)
-    draw.text((300, y + 40), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.line((40, y + 10, 560, y + 10), fill='#1C1D33', width=2)
+    draw.text((300, y + 55), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
 
     bio = BytesIO()
     img.save(bio, 'PNG')
@@ -222,7 +236,7 @@ async def api_order_handler(request):
             f"   💳 Карта: <code>{recipient_card}</code>\n"
             f"   👤 ФИО: <b>{recipient_name}</b>\n"
             f"   🌍 Страна: {country}\n"
-            f"3️⃣ После перевода нажми зеленую кнопку. Клиент получит уведомление и чек."
+            f"3️⃣ После успешной отправки нажми зеленую кнопку. Клиент получит уведомление и брендовый чек."
         )
 
         if ADMIN_CHAT_ID:
@@ -257,13 +271,13 @@ async def process_approve(callback: types.CallbackQuery):
             name = msg_text.split("ФИО: ")[1].split("\n")[0]
             
             image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, card)
-            photo = BufferedInputFile(image_buffer.getvalue(), filename=f"Receipt_{tx_id}.png")
+            photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_Receipt_{tx_id}.png")
             
             success_text = (
-                f"🎉 <b>Ваш перевод успешно завершен!</b>\n\n"
-                f"Уведомляем вас о том, что <b>получатель успешно получил денежные средства</b> на свой счет.\n\n"
+                f"🎉 <b>Перевод успешно доставлен!</b>\n\n"
+                f"Уведомляем вас о том, что <b>получатель успешно получил денежные средства</b>.\n\n"
                 f"🆔 Транзакция: <code>{tx_id}</code>\n\n"
-                f"Прикрепляем официальный электронный чек по вашей операции. Благодарим за выбор Koro Pay!"
+                f"Официальный электронный чек прикреплен выше. Спасибо, что выбрали Koro Pay!"
             )
             await bot.send_photo(target_user_id, photo=photo, caption=success_text, parse_mode="HTML")
         else:
@@ -288,7 +302,7 @@ async def process_reject(callback: types.CallbackQuery):
 
     await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ПЕРЕВОД НЕ ВЫПОЛНЕН (ОТМЕНА)</b>", parse_mode="HTML")
     try:
-        await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> <b>не выполнен</b> (платеж не найден или отменен). Заявка аннулирована.", parse_mode="HTML")
+        await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> <b>не выполнен</b> (платеж не найден или отклонен). Заявка аннулирована.", parse_mode="HTML")
     except: pass
     await callback.answer("Перевод отменен!")
 
@@ -484,7 +498,7 @@ async def webapp_handler(request):
                         <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary-light);">›</span>
                     </div>
                     <div class="receipt-row" style="padding: 14px 0; margin:0;">
-                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">KoroPay v4.1 Neo</span>
+                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">KoroPay v4.2 Neo</span>
                     </div>
                 </div>
             </div>
@@ -495,7 +509,7 @@ async def webapp_handler(request):
                 <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px; background: var(--surface); padding: 20px; border-radius: 16px; border: 1px solid var(--border);">
                     Мы проверяем поступление вашего платежа. <br><br>
                     Как только средства будут подтверждены, <b>наш администратор осуществит перевод получателю</b> в страну назначения.<br><br>
-                    Вы получите уведомление о доставке средств и официальный чек прямо в этот чат.
+                    Вы получите уведомление о доставке средств и брендовый чек прямо в этот чат.
                 </p>
                 <button class="btn-primary" onclick="tg.close()">Отлично, жду чек</button>
             </div>
