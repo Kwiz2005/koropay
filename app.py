@@ -84,39 +84,36 @@ async def update_rates():
             logging.error(f"Ошибка обновления курсов: {e}")
         await asyncio.sleep(3600)
 
-def generate_receipt_image(tx_id, rub, local, currency, name, card):
+def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
     font_path = "Roboto-Medium.ttf"
     if not os.path.exists(font_path):
         urllib.request.urlretrieve("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Medium.ttf", font_path)
     
-    font_text = ImageFont.truetype(font_path, 20)
+    font_text = ImageFont.truetype(font_path, 19)
     font_small = ImageFont.truetype(font_path, 15)
 
-    # Холст в фирменном темном стиле Koro Pay (#05050C)
-    img = Image.new('RGB', (600, 800), color='#05050C')
+    img = Image.new('RGB', (600, 850), color='#05050C')
     draw = ImageDraw.Draw(img)
 
-    # Пытаемся наложить оригинальный логотип из файла logo.png
     logo_drawn = False
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
             logo.thumbnail((80, 80))
-            img.paste(logo, (260, 30), logo)
+            img.paste(logo, (260, 25), logo)
             logo_drawn = True
         except Exception as e:
             logging.error(f"Не удалось наложить логотип на чек: {e}")
 
-    # Если логотипа нет, рисуем текстовый бренд
     if not logo_drawn:
         font_logo = ImageFont.truetype(font_path, 32)
-        draw.text((300, 50), "Koro Pay", font=font_logo, fill='#9667E0', anchor="mm")
+        draw.text((300, 45), "Koro Pay", font=font_logo, fill='#9667E0', anchor="mm")
 
-    draw.text((300, 125), "ОФИЦИАЛЬНЫЙ ЧЕК ПЕРЕВОДА", font=font_small, fill='#8A8E9E', anchor="mm")
-    draw.line((40, 155, 560, 155), fill='#1C1D33', width=2)
+    draw.text((300, 115), "ОФИЦИАЛЬНЫЙ ЧЕК ПЕРЕВОДА", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.line((40, 145, 560, 145), fill='#1C1D33', width=2)
 
-    y = 190
-    spacing = 62
+    y = 175
+    spacing = 58
     
     details = [
         ("Статус:", "ВЫПОЛНЕН (ДОСТАВЛЕНО) ✅", '#30D158'),
@@ -124,8 +121,9 @@ def generate_receipt_image(tx_id, rub, local, currency, name, card):
         ("Дата и время:", datetime.now().strftime("%d.%m.%Y %H:%M"), '#FFFFFF'),
         ("Сумма списания:", f"{rub}", '#FFFFFF'),
         ("Сумма зачисления:", f"{local} {currency}", '#7C83FD'),
+        ("Банк получателя:", bank, '#FFFFFF'),
         ("Получатель:", name, '#FFFFFF'),
-        ("Карта назначения:", card, '#FFFFFF')
+        ("Счет / Карта:", card, '#FFFFFF')
     ]
 
     for label, val, color in details:
@@ -134,7 +132,7 @@ def generate_receipt_image(tx_id, rub, local, currency, name, card):
         y += spacing
 
     draw.line((40, y + 10, 560, y + 10), fill='#1C1D33', width=2)
-    draw.text((300, y + 55), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.text((300, y + 50), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
 
     bio = BytesIO()
     img.save(bio, 'PNG')
@@ -205,6 +203,7 @@ async def api_order_handler(request):
         rub_amount = data.get("rub_amount", "0")
         local_received = data.get("local_received", "0")
         currency = data.get("currency", "VAL")
+        recipient_bank = data.get("recipient_bank", "Не указан")
         recipient_name = data.get("recipient_name", "Не указано")
         recipient_card = data.get("recipient_card", "Не указано")
         transfer_comment = data.get("transfer_comment", "Нет комментария")
@@ -222,7 +221,9 @@ async def api_order_handler(request):
         admin_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="✅ Перевод получателю выполнен", callback_data=f"approve_{user_id}_{tx_id}")],
-                [InlineKeyboardButton(text="❌ Перевод не выполнен (Отмена)", callback_data=f"reject_{user_id}_{tx_id}")]
+                [InlineKeyboardButton(text="❌ Отмена: Фейк / Нет платежа", callback_data=f"rej_fake_{user_id}_{tx_id}")],
+                [InlineKeyboardButton(text="❌ Отмена: Неверный комментарий", callback_data=f"rej_comm_{user_id}_{tx_id}")],
+                [InlineKeyboardButton(text="❌ Отмена: Подозрение AML", callback_data=f"rej_aml_{user_id}_{tx_id}")]
             ]
         )
 
@@ -233,10 +234,11 @@ async def api_order_handler(request):
             f"<b>ИНСТРУКЦИЯ ДЛЯ ТЕБЯ:</b>\n"
             f"1️⃣ Проверь поступление <b>{rub_amount}</b> на {RECEIVE_BANK} с комментарием <code>{tx_id}</code>.\n"
             f"2️⃣ Переведи <b>{local_received} {currency}</b> получателю:\n"
-            f"   💳 Карта: <code>{recipient_card}</code>\n"
+            f"   🏦 Банк: <b>{recipient_bank}</b>\n"
+            f"   💳 Карта/Счет: <code>{recipient_card}</code>\n"
             f"   👤 ФИО: <b>{recipient_name}</b>\n"
             f"   🌍 Страна: {country}\n"
-            f"3️⃣ После успешной отправки нажми зеленую кнопку. Клиент получит уведомление и брендовый чек."
+            f"3️⃣ Выберите результат ниже."
         )
 
         if ADMIN_CHAT_ID:
@@ -267,10 +269,11 @@ async def process_approve(callback: types.CallbackQuery):
     try:
         if tx_data:
             msg_text = callback.message.text
-            card = msg_text.split("Карта: ")[1].split("\n")[0]
-            name = msg_text.split("ФИО: ")[1].split("\n")[0]
+            bank = msg_text.split("Банк: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
+            card = msg_text.split("Карта/Счет: ")[1].split("\n")[0]
+            name = msg_text.split("ФИО: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
             
-            image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, card)
+            image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, bank, card)
             photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_Receipt_{tx_id}.png")
             
             success_text = (
@@ -287,11 +290,19 @@ async def process_approve(callback: types.CallbackQuery):
         
     await callback.answer("Уведомление и чек отправлены!")
 
-@dp.callback_query(F.data.startswith("reject_"))
+@dp.callback_query(F.data.startswith("rej_"))
 async def process_reject(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    target_user_id = int(parts[1])
-    tx_id = parts[2]
+    reason_type = parts[1]
+    target_user_id = int(parts[2])
+    tx_id = parts[3]
+
+    reasons = {
+        "fake": "платеж не поступил на реквизиты сервиса (не найден перевод)",
+        "comm": "указан неверный или отсутствующий комментарий к платежу",
+        "aml": "сработали правила безопасности и AML-контроля сервиса"
+    }
+    reason_text = reasons.get(reason_type, "нарушение регламента проведения операций")
 
     conn = sqlite3.connect('koropay.db')
     c = conn.cursor()
@@ -300,11 +311,17 @@ async def process_reject(callback: types.CallbackQuery):
     conn.close()
     add_strike(target_user_id)
 
-    await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ПЕРЕВОД НЕ ВЫПОЛНЕН (ОТМЕНА)</b>", parse_mode="HTML")
+    await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ОТМЕНЕНО: {reason_text.upper()}</b>", parse_mode="HTML")
     try:
-        await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> <b>не выполнен</b> (платеж не найден или отклонен). Заявка аннулирована.", parse_mode="HTML")
+        await bot.send_message(
+            target_user_id, 
+            f"❌ Ваш перевод <code>{tx_id}</code> <b>отменен</b>.\n\n"
+            f"<b>Причина отмены:</b> {reason_text}.\n\n"
+            f"Заявка аннулирована. При возникновении вопросов обратитесь в поддержку.", 
+            parse_mode="HTML"
+        )
     except: pass
-    await callback.answer("Перевод отменен!")
+    await callback.answer("Заявка отклонена, клиент уведомлен.")
 
 async def webapp_handler(request):
   html_content = f"""
@@ -401,11 +418,17 @@ async def webapp_handler(request):
                 <div class="card-panel">
                     <div class="input-group">
                         <label>Страна зачисления</label>
-                        <select id="country" onchange="calculateParams()">
+                        <select id="country" onchange="onCountryChange()">
                             <option value="Uzbekistan|UZS|{EXCHANGE_RATES['UZS']}">🇺🇿 Узбекистан (UZS)</option>
                             <option value="Tajikistan|TJS|{EXCHANGE_RATES['TJS']}">🇹🇯 Таджикистан (TJS)</option>
                             <option value="Kyrgyzstan|KGS|{EXCHANGE_RATES['KGS']}">🇰🇬 Киргизия (KGS)</option>
                             <option value="Azerbaijan|AZN|{EXCHANGE_RATES['AZN']}">🇦🇿 Азербайджан (AZN)</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Банк получателя</label>
+                        <select id="recipientBank">
+                            <!-- Динамически заполняется скриптом -->
                         </select>
                     </div>
                     <div class="input-group">
@@ -422,8 +445,8 @@ async def webapp_handler(request):
 
                 <div class="card-panel">
                     <div class="input-group">
-                        <label>Номер карты</label>
-                        <input type="tel" id="recCard" placeholder="0000 0000 0000 0000" maxlength="19" oninput="formatCard(this)">
+                        <label>Номер карты / счета</label>
+                        <input type="tel" id="recCard" placeholder="0000 0000 0000 0000" maxlength="23" oninput="formatCard(this)">
                     </div>
                     <div class="input-group">
                         <label>ФИО получателя</label>
@@ -498,7 +521,7 @@ async def webapp_handler(request):
                         <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary-light);">›</span>
                     </div>
                     <div class="receipt-row" style="padding: 14px 0; margin:0;">
-                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">KoroPay v4.2 Neo</span>
+                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">Koro Pay v1.0.0.0</span>
                     </div>
                 </div>
             </div>
@@ -508,7 +531,7 @@ async def webapp_handler(request):
                 <h2 style="margin-bottom: 12px; font-weight: 800;">Ожидание перевода</h2>
                 <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px; background: var(--surface); padding: 20px; border-radius: 16px; border: 1px solid var(--border);">
                     Мы проверяем поступление вашего платежа. <br><br>
-                    Как только средства будут подтверждены, <b>наш администратор осуществит перевод получателю</b> в страну назначения.<br><br>
+                    Как только средства будут подтверждены, <b>наш администратор осуществит перевод получателю</b> в выбранный банк.<br><br>
                     Вы получите уведомление о доставке средств и брендовый чек прямо в этот чат.
                 </p>
                 <button class="btn-primary" onclick="tg.close()">Отлично, жду чек</button>
@@ -524,11 +547,13 @@ async def webapp_handler(request):
         <div id="ofertaModal" class="modal" onclick="if(event.target==this) closeModal('ofertaModal')">
             <div class="modal-content legal-text">
                 <div class="modal-close"></div>
-                <h3>Договор-оферта Koro Pay</h3>
-                <p><b>1. Предмет.</b> Предоставление шлюза для международных P2P переводов.</p>
-                <p><b>2. AML.</b> Запрещено использование карт третьих лиц. При подозрениях Сервис может запросить верификацию.</p>
-                <p><b>3. Исполнение.</b> Обязательства Сервиса считаются выполненными в момент зачисления средств на счет получателя. Возврат средств после отправки невозможен.</p>
-                <button class="btn-primary" style="margin-top: 24px;" onclick="closeModal('ofertaModal')">Я ознакомлен</button>
+                <h3>Договор публичной оферты Koro Pay</h3>
+                <p><b>1. Общие положения.</b> Настоящий документ является официальным предложением (офертой) сервиса Koro Pay и определяет условия предоставления услуг по международным P2P переводам денежных средств в страны СНГ.</p>
+                <p><b>2. Предмет соглашения.</b> Сервис обязуется принимать рублевые платежи от Пользователя и организовывать зачисление эквивалентной суммы в местной валюте (UZS, TJS, KGS, AZN) на указанные реквизиты получателя.</p>
+                <p><b>3. Финансовые условия и курсы.</b> Расчет суммы зачисления производится по текущему рыночному курсу API с учетом регламентированной сервисной комиссии. Комиссии и курсы фиксируются на момент создания заявки.</p>
+                <p><b>4. Политика AML и Безопасность.</b> Пользователь гарантирует легальное происхождение средств. Категорически запрещено использование карт третьих лиц и анонимных платежных инструментов. При подозрении на мошенничество Сервис имеет право запросить верификацию или заблокировать аккаунт.</p>
+                <p><b>5. Порядок исполнения и возвраты.</b> Обязательства Сервиса считаются выполненными в полном объеме в момент успешного зачисления средств на счет получателя. Возврат средств после отправки перевода получателю невозможен.</p>
+                <button class="btn-primary" style="margin-top: 24px;" onclick="closeModal('ofertaModal')">Я ознакомлен и согласен</button>
             </div>
         </div>
 
@@ -537,9 +562,19 @@ async def webapp_handler(request):
             tg.expand();
             tg.ready();
 
+            const banksData = {{
+                "Uzbekistan": ["UzCard / Humo (Любой банк)", "KapitalBank", "Tenge Bank", "Ipoteka Bank", "AloqaBank", "AgroBank"],
+                "Tajikistan": ["Alif Bank", "Spitamen Bank", "Eskhata Bank", "Cori Standard", "Dushanbe City"],
+                "Kyrgyzstan": ["Optima Bank", "MBank (МБанк)", "Demir Bank", "RSK Bank", "Bai-Tushum"],
+                "Azerbaijan": ["Kapital Bank", "Leobank", "ABB (Международный банк)", "Unibank", "Pasha Bank"]
+            }};
+
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
 
-            window.onload = function() {{ calculateParams(); }};
+            window.onload = function() {{ 
+                updateBanks();
+                calculateParams(); 
+            }};
 
             function haptic() {{ if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); }}
 
@@ -562,6 +597,25 @@ async def webapp_handler(request):
             }}
 
             function setAmount(val) {{ haptic(); document.getElementById('amount').value = val; calculateParams(); }}
+
+            function onCountryChange() {{
+                updateBanks();
+                calculateParams();
+            }}
+
+            function updateBanks() {{
+                let countryVal = document.getElementById('country').value.split('|')[0];
+                let bankSelect = document.getElementById('recipientBank');
+                bankSelect.innerHTML = '';
+                
+                let availableBanks = banksData[countryVal] || ["Стандартный банк"];
+                availableBanks.forEach(bank => {{
+                    let opt = document.createElement('option');
+                    opt.value = bank;
+                    opt.textContent = bank;
+                    bankSelect.appendChild(opt);
+                }});
+            }}
 
             function calculateParams() {{
                 let val = document.getElementById('country').value.split('|');
@@ -635,7 +689,7 @@ async def webapp_handler(request):
                 let card = document.getElementById('recCard').value.replace(/\\s+/g, '');
                 
                 if (enteredRub <= 0 || enteredRub > 25000) {{ tg.showAlert('Лимит перевода от 1 до 25 000 ₽'); return; }}
-                if (card.length < 16) {{ tg.showAlert('Проверьте номер карты получателя'); return; }}
+                if (card.length < 12) {{ tg.showAlert('Проверьте номер карты или счета получателя'); return; }}
                 if (!document.getElementById('recName').value) {{ tg.showAlert('Укажите ФИО получателя'); return; }}
                 if (!document.getElementById('termsCheck').checked) {{ tg.showAlert('Необходимо согласиться с Офертой'); return; }}
 
@@ -657,6 +711,7 @@ async def webapp_handler(request):
                         method: 'POST', headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{
                             country: document.getElementById('country').value.split('|')[0],
+                            recipient_bank: document.getElementById('recipientBank').value,
                             rub_amount: enteredRub + ' ₽',
                             local_received: calculatedLocal.toFixed(2),
                             currency: currentCurr,
