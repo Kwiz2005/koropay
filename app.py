@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 from aiohttp import web
 
-# === ТВОИ ДАННЫЕ ===
+# === НОВЫЙ ТОКЕН БОТА ===
 TOKEN = "8639644231:AAGNysKoCaTQyqg0pvPEXUxgOH5nJgG-pAk"
 ADMIN_CHAT_ID = 6084347801
 WEBAPP_URL = "https://koropay-en5x.onrender.com"
@@ -514,6 +514,18 @@ async def webapp_handler(request):
                 </div>
             </div>
 
+            <div id="tab-support" class="screen">
+                <h2 style="margin-bottom: 20px; font-weight: 800;">Техподдержка</h2>
+                <div class="card-panel" style="text-align: center; padding: 24px 18px;">
+                    <div style="font-size: 42px; margin-bottom: 12px;">💬</div>
+                    <h3 style="margin: 0 0 8px 0; font-size: 18px;">Возникли вопросы?</h3>
+                    <p style="color: var(--text-sec); font-size: 13px; line-height: 1.5; margin-bottom: 20px;">
+                        Наша служба поддержки работает 24/7. Напишите нам в Telegram, и мы поможем решить любой вопрос по переводу.
+                    </p>
+                    <button class="btn-primary" onclick="tg.openTelegramLink('https://t.me/koropay_support')">Написать в поддержку</button>
+                </div>
+            </div>
+
             <div id="tab-profile" class="screen">
                 <h2 style="margin-bottom: 20px; font-weight: 800;">Мой Профиль</h2>
                 <div class="card-panel">
@@ -541,6 +553,7 @@ async def webapp_handler(request):
         <div class="bottom-nav" id="bottomNav">
             <div class="nav-item active" onclick="switchTab('tab-transfer', this)"><div class="nav-icon">💸</div><div>Перевод</div></div>
             <div class="nav-item" onclick="switchTab('tab-history', this); loadHistory();"><div class="nav-icon">🕒</div><div>История</div></div>
+            <div class="nav-item" onclick="switchTab('tab-support', this)"><div class="nav-icon">🎧</div><div>Поддержка</div></div>
             <div class="nav-item" onclick="switchTab('tab-profile', this)"><div class="nav-icon">⚙️</div><div>Профиль</div></div>
         </div>
 
@@ -720,7 +733,7 @@ async def webapp_handler(request):
                             transfer_comment: currentOrderCode,
                             username: user.username || 'Аноним', user_id: user.id || 0
                         }})
-                    }});
+                    }};
                     let result = await response.json();
                     if (!response.ok) {{ tg.showAlert(result.message || 'Ошибка сервера.'); location.reload(); return; }}
                     
@@ -747,7 +760,7 @@ async def main():
   
   asyncio.create_task(update_rates())
   
-  logging.info(f"Сервер Koro Pay запущен...")
+  logging.info(f"Сервер Koro Pay запущен с новым токеном...")
   await dp.start_polling(bot)
 
 
