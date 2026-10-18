@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import time
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -22,6 +23,9 @@ RECEIVE_CARD = "2200 3204 4647 4787"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
+# Словарь для антиспама (хранит время последнего запроса пользователя)
+user_cooldowns = {}
+
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -40,8 +44,9 @@ async def cmd_start(message: types.Message):
       ]
   )
   welcome_text = (
-      "<b> Koro Pay — Международные переводы в СНГ</b>\n\n"
-      "Быстро, безопасно и по выгодному курсу.\n\n"
+      "<b>🌐 Koro Pay — Международные переводы в СНГ</b>\n\n"
+      "Безопасно, быстро и по выгодному курсу.\n"
+      "Лимит перевода: до 25 000 ₽ за раз.\n\n"
       "<i>Нажмите кнопку ниже, чтобы открыть приложение.</i>"
   )
   await message.answer(
@@ -49,10 +54,25 @@ async def cmd_start(message: types.Message):
   )
 
 
-# Обработка заявок от Web App
+# Обработка заявок от Web App с защитой
 async def api_order_handler(request):
   try:
     data = await request.json()
+    user_id = data.get("user_id", 0)
+
+    # 1. Проверка антиспама (Кулдаун 60 секунд)
+    current_time = time.time()
+    if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
+      return web.json_response(
+          {
+              "status": "error",
+              "message": "Подождите минуту перед созданием новой заявки.",
+          },
+          status=400,
+      )
+
+    user_cooldowns[user_id] = current_time
+
     country = data.get("country", "СНГ")
     rub_amount = data.get("rub_amount", "0")
     local_received = data.get("local_received", "0")
@@ -60,7 +80,6 @@ async def api_order_handler(request):
     recipient_name = data.get("recipient_name", "Не указано")
     recipient_card = data.get("recipient_card", "Не указано")
     user_name = data.get("username", "Аноним")
-    user_id = data.get("user_id", "0")
 
     user_info = f"@{user_name}" if user_name != "Аноним" else f"ID: {user_id}"
     tx_id = f"KP-{random.randint(100000, 999999)}"
@@ -77,14 +96,14 @@ async def api_order_handler(request):
     )
 
     admin_message = (
-        f"🚨 <b>Новый перевод на проверку! [<code>{tx_id}</code>]</b>\n\n"
+        f"🚨 <b>Новый защищенный перевод! [<code>{tx_id}</code>]</b>\n\n"
         f"👤 Клиент: {user_info} (ID: <code>{user_id}</code>)\n"
         f"🌍 Направление: <b>{country}</b>\n"
         f"🇷🇺 Получено от клиента: <b>{rub_amount} RUB</b>\n"
         f"💶 К выплате получателю: <b>{local_received} {currency}</b>\n\n"
         f"👤 Получатель: <b>{recipient_name}</b>\n"
         f"💳 Карта получателя: <code>{recipient_card}</code>\n\n"
-        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}). Если деньги поступили, нажмите кнопку ниже:"
+        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}). Убедитесь, что оплата с личной карты клиента:"
     )
 
     if ADMIN_CHAT_ID:
@@ -116,8 +135,8 @@ async def process_approve(callback: types.CallbackQuery):
     success_text = (
         f"🎉 <b>Ваш перевод успешно выполнен!</b>\n\n"
         f"🆔 Номер транзакции: <code>{tx_id}</code>\n"
-        f"✅ Средства успешно отправлены получателю.\n\n"
-        f"Благодарим за использование <b>Koro Pay</b>!"
+        f"✅ Средства отправлены получателю.\n\n"
+        f"Благодарим за доверие к <b>Koro Pay</b>!"
     )
     await bot.send_message(target_user_id, success_text, parse_mode="HTML")
   except Exception as e:
@@ -133,7 +152,7 @@ async def webapp_handler(request):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Koro Pay — Денежные переводы</title>
+        <title>Koro Pay — Безопасные переводы</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
             :root {{
@@ -146,6 +165,7 @@ async def webapp_handler(request):
                 --text-muted: #9ca3af;
                 --border: rgba(139, 92, 246, 0.2);
                 --success: #22c55e;
+                --error: #ef4444;
             }}
             body {{
                 background: var(--bg-color);
@@ -162,7 +182,7 @@ async def webapp_handler(request):
                 box-sizing: border-box;
             }}
             h2 {{ margin: 0 0 4px 0; font-size: 20px; text-align: center; }}
-            .subtitle {{ font-size: 12px; color: var(--text-muted); text-align: center; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }}
+            .subtitle {{ font-size: 11px; color: var(--text-muted); text-align: center; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }}
             
             .form-group {{ margin-bottom: 14px; }}
             label {{ font-size: 11px; font-weight: 700; color: var(--text-muted); display: block; margin-bottom: 6px; text-transform: uppercase; }}
@@ -180,6 +200,16 @@ async def webapp_handler(request):
             }}
             .calc-val {{ font-size: 18px; font-weight: bold; color: #c084fc; }}
             
+            .security-notice {{
+                font-size: 11px; color: var(--text-muted); background: rgba(239, 68, 68, 0.08);
+                border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 8px; padding: 10px; margin-bottom: 14px; line-height: 1.4;
+            }}
+            
+            .checkbox-group {{
+                display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 16px;
+            }}
+            .checkbox-group input {{ width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }}
+
             button.main-btn {{
                 width: 100%; padding: 14px; background: var(--accent-gradient);
                 color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: bold;
@@ -198,6 +228,9 @@ async def webapp_handler(request):
                 color: #c084fc; padding: 8px; border-radius: 8px; font-size: 13px;
                 font-weight: bold; cursor: pointer; width: 100%; margin-top: 8px;
             }}
+            .timer {{
+                font-size: 14px; color: #f59e0b; text-align: center; font-weight: bold; margin-bottom: 10px;
+            }}
             .spinner {{
                 font-size: 40px; text-align: center; margin: 20px 0;
                 animation: pulse 1.5s infinite;
@@ -210,7 +243,7 @@ async def webapp_handler(request):
             <!-- ЭКРАН 1: ВВОД ДАННЫХ -->
             <div id="screenForm" class="screen active">
                 <h2>Koro Pay</h2>
-                <div class="subtitle">Переводы в СНГ</div>
+                <div class="subtitle">Защищенные переводы в СНГ</div>
 
                 <div class="form-group">
                     <label for="country">Страна назначения</label>
@@ -242,13 +275,26 @@ async def webapp_handler(request):
                     <input type="text" id="recCard" placeholder="Номер карты">
                 </div>
 
+                <div class="security-notice">
+                    🛡 <b>Безопасность:</b> Перевод должен осуществляться строго с вашей личной карты. Третьи лица не допускаются.
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" id="termsCheck">
+                    <label for="termsCheck" style="text-transform: none; display: inline; color: var(--text-muted); cursor: pointer;">
+                        Я согласен с условиями оферты и подтверждаю легальность средств.
+                    </label>
+                </div>
+
                 <button class="main-btn" onclick="submitForm()">Продолжить</button>
             </div>
 
-            <!-- ЭКРАН 2: ОПЛАТА ПО РЕКВИЗИТАМ -->
+            <!-- ЭКРАН 2: ОПЛАТА ПО РЕКВИЗИТАМ С ТАЙМЕРОМ -->
             <div id="screenPay" class="screen">
                 <h2>Оплата перевода</h2>
-                <div class="subtitle">Перевод на карту</div>
+                <div class="subtitle">Защищенный шлюз</div>
+
+                <div class="timer" id="timerDisplay">Осталось времени: 15:00</div>
 
                 <div class="req-box">
                     <div style="font-size: 11px; color: var(--text-muted);">К ОПЛАТЕ:</div>
@@ -279,10 +325,11 @@ async def webapp_handler(request):
             let tg = window.Telegram.WebApp;
             tg.expand();
 
-            let currentMultiplier = 135; // курс умножения рублей в валюту с учетом комиссии
+            let currentMultiplier = 135;
             let currentCurr = 'UZS';
             let enteredRub = 0;
             let calculatedLocal = 0;
+            let timerInterval;
 
             function calculateLocal() {{
                 let val = document.getElementById('country').value.split('|');
@@ -290,7 +337,6 @@ async def webapp_handler(request):
                 currentMultiplier = parseFloat(val[2]);
 
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
-                // Конвертация рублей в местную валюту с вычетом небольшой комиссии
                 calculatedLocal = Math.round(enteredRub * currentMultiplier);
                 
                 document.getElementById('totalLocal').textContent = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU') + ' ' + currentCurr : '0 ' + currentCurr;
@@ -303,10 +349,31 @@ async def webapp_handler(request):
                 setTimeout(() => {{ btn.textContent = '📋 Скопировать карту'; }}, 2000);
             }}
 
+            function startTimer(duration) {{
+                let timer = duration, minutes, seconds;
+                clearInterval(timerInterval);
+                timerInterval = setInterval(function () {{
+                    minutes = parseInt(timer / 60, 10);
+                    seconds = parseInt(timer % 60, 10);
+
+                    minutes = minutes < 10 ? "0" + minutes : minutes;
+                    seconds = seconds < 10 ? "0" + seconds : seconds;
+
+                    document.getElementById('timerDisplay').textContent = "Осталось времени: " + minutes + ":" + seconds;
+
+                    if (--timer < 0) {{
+                        clearInterval(timerInterval);
+                        alert('Время ожидания истекло. Создайте заявку заново.');
+                        location.reload();
+                    }}
+                }}, 1000);
+            }}
+
             async function submitForm() {{
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
                 let name = document.getElementById('recName').value.trim();
                 let card = document.getElementById('recCard').value.trim();
+                let termsChecked = document.getElementById('termsCheck').checked;
 
                 if (enteredRub <= 0) {{
                     alert('Введите сумму перевода в рублях!');
@@ -320,11 +387,18 @@ async def webapp_handler(request):
                     alert('Заполните данные получателя!');
                     return;
                 }}
+                if (!termsChecked) {{
+                    alert('Необходимо согласиться с условиями оферты!');
+                    return;
+                }}
 
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 
                 document.getElementById('screenForm').classList.remove('active');
                 document.getElementById('screenPay').classList.add('active');
+
+                // Запускаем таймер на 15 минут (900 секунд)
+                startTimer(900);
             }}
 
             async function confirmPayment() {{
@@ -335,6 +409,7 @@ async def webapp_handler(request):
 
                 let user = (tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {{}};
 
+                clearInterval(timerInterval);
                 document.getElementById('screenPay').classList.remove('active');
                 document.getElementById('screenWait').classList.add('active');
 
@@ -351,8 +426,14 @@ async def webapp_handler(request):
                             recipient_card: card,
                             username: user.username || 'Аноним',
                             user_id: user.id || 0
-                        }})
+                        }}
                     }});
+                    
+                    let result = await response.json();
+                    if (!response.ok) {{
+                        alert(result.message || 'Ошибка обработки заявки.');
+                        location.reload();
+                    }}
                 }} catch (e) {{
                     alert('Ошибка связи с сервером.');
                 }}
@@ -374,7 +455,7 @@ async def main():
   port = int(os.environ.get("PORT", 8080))
   site = web.TCPSite(runner, "0.0.0.0", port)
   await site.start()
-  logging.info(f"Сервер запущен на порту {port}...")
+  logging.info(f"Защищенный сервер запущен на порту {port}...")
 
   logging.info("Бот Koro Pay запущен...")
   await dp.start_polling(bot)
