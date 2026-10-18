@@ -23,7 +23,7 @@ RECEIVE_CARD = "2200 3204 4647 4787"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
-# Словарь для антиспама (хранит время последнего запроса пользователя)
+# Словарь для антиспама
 user_cooldowns = {}
 
 logging.basicConfig(level=logging.INFO)
@@ -54,13 +54,11 @@ async def cmd_start(message: types.Message):
   )
 
 
-# Обработка заявок от Web App с защитой
 async def api_order_handler(request):
   try:
     data = await request.json()
     user_id = data.get("user_id", 0)
 
-    # 1. Проверка антиспама (Кулдаун 60 секунд)
     current_time = time.time()
     if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
       return web.json_response(
@@ -70,7 +68,6 @@ async def api_order_handler(request):
           },
           status=400,
       )
-
     user_cooldowns[user_id] = current_time
 
     country = data.get("country", "СНГ")
@@ -103,7 +100,7 @@ async def api_order_handler(request):
         f"💶 К выплате получателю: <b>{local_received} {currency}</b>\n\n"
         f"👤 Получатель: <b>{recipient_name}</b>\n"
         f"💳 Карта получателя: <code>{recipient_card}</code>\n\n"
-        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}). Убедитесь, что оплата с личной карты клиента:"
+        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}). Если всё верно, нажмите кнопку:"
     )
 
     if ADMIN_CHAT_ID:
@@ -165,7 +162,6 @@ async def webapp_handler(request):
                 --text-muted: #9ca3af;
                 --border: rgba(139, 92, 246, 0.2);
                 --success: #22c55e;
-                --error: #ef4444;
             }}
             body {{
                 background: var(--bg-color);
@@ -179,7 +175,7 @@ async def webapp_handler(request):
                 width: 100%; max-width: 400px; margin: auto;
                 background: var(--card-bg); border: 1px solid var(--border);
                 border-radius: 20px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-                box-sizing: border-box;
+                box-sizing: border-box; position: relative;
             }}
             h2 {{ margin: 0 0 4px 0; font-size: 20px; text-align: center; }}
             .subtitle {{ font-size: 11px; color: var(--text-muted); text-align: center; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }}
@@ -209,6 +205,7 @@ async def webapp_handler(request):
                 display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 16px;
             }}
             .checkbox-group input {{ width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }}
+            .link {{ color: #c084fc; text-decoration: underline; cursor: pointer; }}
 
             button.main-btn {{
                 width: 100%; padding: 14px; background: var(--accent-gradient);
@@ -236,6 +233,22 @@ async def webapp_handler(request):
                 animation: pulse 1.5s infinite;
             }}
             @keyframes pulse {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}
+
+            /* Модальное окно Оферты */
+            .modal-overlay {{
+                display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; padding: 16px; box-sizing: border-box;
+            }}
+            .modal-content {{
+                background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
+                padding: 20px; width: 100%; max-width: 360px; max-height: 80vh; overflow-y: auto;
+            }}
+            .modal-content h3 {{ margin-top: 0; font-size: 18px; color: #fff; }}
+            .modal-content p {{ font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }}
+            .close-modal {{
+                background: var(--card-inner); border: 1px solid var(--border); color: #fff;
+                padding: 10px; width: 100%; border-radius: 8px; margin-top: 10px; cursor: pointer;
+            }}
         </style>
     </head>
     <body>
@@ -282,18 +295,17 @@ async def webapp_handler(request):
                 <div class="checkbox-group">
                     <input type="checkbox" id="termsCheck">
                     <label for="termsCheck" style="text-transform: none; display: inline; color: var(--text-muted); cursor: pointer;">
-                        Я согласен с условиями оферты и подтверждаю легальность средств.
+                        Я согласен с <span class="link" onclick="openModal(event)">условиями оферты</span> и подтверждаю легальность средств.
                     </label>
                 </div>
 
                 <button class="main-btn" onclick="submitForm()">Продолжить</button>
             </div>
 
-            <!-- ЭКРАН 2: ОПЛАТА ПО РЕКВИЗИТАМ С ТАЙМЕРОМ -->
+            <!-- ЭКРАН 2: ОПЛАТА -->
             <div id="screenPay" class="screen">
                 <h2>Оплата перевода</h2>
                 <div class="subtitle">Защищенный шлюз</div>
-
                 <div class="timer" id="timerDisplay">Осталось времени: 15:00</div>
 
                 <div class="req-box">
@@ -311,13 +323,25 @@ async def webapp_handler(request):
                 <button class="main-btn" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(34,197,94,0.4);">Я оплатил(а)</button>
             </div>
 
-            <!-- ЭКРАН 3: ОЖИДАНИЕ ПРОВЕРКИ АДМИНОМ -->
+            <!-- ЭКРАН 3: ОЖИДАНИЕ -->
             <div id="screenWait" class="screen" style="text-align: center;">
                 <div class="spinner">⏳</div>
                 <h3 style="margin: 0 0 8px 0;">Проверка платежа</h3>
                 <p style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
-                    Мы проверяем поступление средств на наш счет. Пожалуйста, ожидайте, скоро здесь появится статус подтверждения.
+                    Мы проверяем поступление средств. Пожалуйста, ожидайте статуса подтверждения.
                 </p>
+            </div>
+        </div>
+
+        <!-- МОДАЛЬНОЕ ОКНО ОФЕРТЫ -->
+        <div id="termsModal" class="modal-overlay">
+            <div class="modal-content">
+                <h3>Условия использования (Оферта)</h3>
+                <p><b>1. Общие положения.</b> Koro Pay предоставляет услуги по содействию в P2P-переводах. Пользователь гарантирует легальное происхождение средств.</p>
+                <p><b>2. Курс и комиссии.</b> Расчетный курс фиксируется в момент оформления заявки и включает в себя сервисные сборы. Сумма к получению является окончательной.</p>
+                <p><b>3. Безопасность (AML).</b> Запрещено использование сервиса в мошеннических целях. Перевод должен осуществляться исключительно с личных счетов Пользователя (запрет третьих лиц).</p>
+                <p><b>4. Ответственность.</b> Сервис не несет ответственности за переводы по ошибочно указанным реквизитам. После успешной отправки средств на международные реквизиты отмена операции и возврат средств невозможны.</p>
+                <button class="close-modal" onclick="closeModal()">Закрыть и продолжить</button>
             </div>
         </div>
 
@@ -331,10 +355,16 @@ async def webapp_handler(request):
             let calculatedLocal = 0;
             let timerInterval;
 
-            // Запускаем расчет сразу при открытии, чтобы подхватить дефолтную валюту
-            window.onload = function() {{
-                calculateLocal();
-            }};
+            window.onload = function() {{ calculateLocal(); }};
+
+            function openModal(e) {{
+                e.preventDefault();
+                e.stopPropagation();
+                document.getElementById('termsModal').style.display = 'flex';
+            }}
+            function closeModal() {{
+                document.getElementById('termsModal').style.display = 'none';
+            }}
 
             function calculateLocal() {{
                 let val = document.getElementById('country').value.split('|');
@@ -343,7 +373,6 @@ async def webapp_handler(request):
 
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
                 calculatedLocal = Math.round(enteredRub * currentMultiplier);
-                
                 document.getElementById('totalLocal').textContent = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU') + ' ' + currentCurr : '0 ' + currentCurr;
             }}
 
@@ -360,12 +389,9 @@ async def webapp_handler(request):
                 timerInterval = setInterval(function () {{
                     minutes = parseInt(timer / 60, 10);
                     seconds = parseInt(timer % 60, 10);
-
                     minutes = minutes < 10 ? "0" + minutes : minutes;
                     seconds = seconds < 10 ? "0" + seconds : seconds;
-
                     document.getElementById('timerDisplay').textContent = "Осталось времени: " + minutes + ":" + seconds;
-
                     if (--timer < 0) {{
                         clearInterval(timerInterval);
                         alert('Время ожидания истекло. Создайте заявку заново.');
@@ -380,29 +406,14 @@ async def webapp_handler(request):
                 let card = document.getElementById('recCard').value.trim();
                 let termsChecked = document.getElementById('termsCheck').checked;
 
-                if (enteredRub <= 0) {{
-                    alert('Введите сумму перевода в рублях!');
-                    return;
-                }}
-                if (enteredRub > 25000) {{
-                    alert('Максимальная сумма отправки составляет 25 000 рублей!');
-                    return;
-                }}
-                if (!name || !card) {{
-                    alert('Заполните данные получателя!');
-                    return;
-                }}
-                if (!termsChecked) {{
-                    alert('Необходимо согласиться с условиями оферты!');
-                    return;
-                }}
+                if (enteredRub <= 0) {{ alert('Введите сумму перевода в рублях!'); return; }}
+                if (enteredRub > 25000) {{ alert('Максимальная сумма отправки составляет 25 000 рублей!'); return; }}
+                if (!name || !card) {{ alert('Заполните данные получателя!'); return; }}
+                if (!termsChecked) {{ alert('Необходимо согласиться с условиями оферты!'); return; }}
 
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
-                
                 document.getElementById('screenForm').classList.remove('active');
                 document.getElementById('screenPay').classList.add('active');
-
-                // Запускаем таймер на 15 минут (900 секунд)
                 startTimer(900);
             }}
 
@@ -411,7 +422,6 @@ async def webapp_handler(request):
                 let countryName = countrySelect.options[countrySelect.selectedIndex].text;
                 let name = document.getElementById('recName').value;
                 let card = document.getElementById('recCard').value;
-
                 let user = (tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {{}};
 
                 clearInterval(timerInterval);
@@ -433,15 +443,9 @@ async def webapp_handler(request):
                             user_id: user.id || 0
                         }})
                     }});
-                    
                     let result = await response.json();
-                    if (!response.ok) {{
-                        alert(result.message || 'Ошибка обработки заявки.');
-                        location.reload();
-                    }}
-                }} catch (e) {{
-                    alert('Ошибка связи с сервером.');
-                }}
+                    if (!response.ok) {{ alert(result.message || 'Ошибка обработки.'); location.reload(); }}
+                }} catch (e) {{ alert('Ошибка связи с сервером.'); }}
             }}
         </script>
     </body>
