@@ -4,9 +4,10 @@ import logging
 import os
 import random
 import time
+import sqlite3
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -24,24 +25,43 @@ RECEIVE_CARD = "2200 3204 4647 4787"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
-# Базовые курсы (обновятся автоматически при старте сервера)
-EXCHANGE_RATES = {
-    "UZS": 135.00,
-    "TJS": 0.115,
-    "KGS": 0.95,
-    "AZN": 0.018
-}
-
-# Комиссия твоего сервиса. 0.95 означает, что ты удерживаешь 5% от официального курса.
+EXCHANGE_RATES = {"UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018}
 COMMISSION_MARGIN = 0.95 
-user_cooldowns = {}
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ SQLite ===
+def init_db():
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    # Таблица пользователей (учет страйков и банов)
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (user_id INTEGER PRIMARY KEY, username TEXT, strikes INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0)''')
+    # Таблица переводов
+    c.execute('''CREATE TABLE IF NOT EXISTS transfers 
+                 (tx_id TEXT PRIMARY KEY, user_id INTEGER, country TEXT, rub_amount TEXT, local_amount TEXT, currency TEXT, status TEXT)''')
+    conn.commit()
+    conn.close()
 
-# Фоновая задача для парсинга реальных курсов валют
+def get_user(user_id):
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    user = c.fetchone()
+    conn.close()
+    return user
+
+def add_strike(user_id):
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    c.execute("UPDATE users SET strikes = strikes + 1 WHERE user_id=?", (user_id,))
+    c.execute("UPDATE users SET is_banned = 1 WHERE user_id=? AND strikes >= 3", (user_id,))
+    conn.commit()
+    conn.close()
+
+
 async def update_rates():
     global EXCHANGE_RATES
     while True:
@@ -52,241 +72,189 @@ async def update_rates():
                         data = await resp.json()
                         rates = data.get("rates", {})
                         if rates:
-                            # Умножаем официальный курс на маржу сервиса
                             if "UZS" in rates: EXCHANGE_RATES["UZS"] = rates["UZS"] * COMMISSION_MARGIN
                             if "TJS" in rates: EXCHANGE_RATES["TJS"] = rates["TJS"] * COMMISSION_MARGIN
                             if "KGS" in rates: EXCHANGE_RATES["KGS"] = rates["KGS"] * COMMISSION_MARGIN
                             if "AZN" in rates: EXCHANGE_RATES["AZN"] = rates["AZN"] * COMMISSION_MARGIN
-                            logging.info(f"Курсы успешно обновлены по API: {EXCHANGE_RATES}")
         except Exception as e:
             logging.error(f"Ошибка обновления курсов: {e}")
-        
-        # Спим 1 час до следующего обновления
         await asyncio.sleep(3600)
 
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-  web_app_kb = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text="💸 Отправить перевод в СНГ",
-                  web_app=WebAppInfo(url=WEBAPP_URL),
-              )
-          ]
-      ]
-  )
-  welcome_text = (
-      "<b>🌐 Koro Pay — Международные переводы в СНГ</b>\n\n"
-      "Безопасно, быстро и по актуальному биржевому курсу.\n"
-      "Лимит перевода: до 25 000 ₽ за раз.\n\n"
-      "<i>Нажмите кнопку ниже, чтобы открыть приложение.</i>"
-  )
-  await message.answer(
-      welcome_text, reply_markup=web_app_kb, parse_mode="HTML"
-  )
+    user_id = message.from_user.id
+    username = message.from_user.username or "Аноним"
+    
+    # Регистрируем пользователя в БД
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    conn.commit()
+    conn.close()
+
+    user_data = get_user(user_id)
+    if user_data and user_data[3] == 1:
+        await message.answer("🚫 Ваш аккаунт заблокирован за нарушение правил сервиса (слишком много неоплаченных заявок).")
+        return
+
+    web_app_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="💸 Отправить перевод", web_app=WebAppInfo(url=WEBAPP_URL))]]
+    )
+    await message.answer(
+        "<b>🌐 Koro Pay — Международные переводы</b>\n\n"
+        "Лимит перевода: до 25 000 ₽ за раз.\n"
+        "<i>Нажмите кнопку ниже, чтобы открыть приложение.</i>\n\n"
+        "Проверить историю переводов: /profile",
+        reply_markup=web_app_kb, parse_mode="HTML"
+    )
+
+@dp.message(Command("profile"))
+async def cmd_profile(message: types.Message):
+    user_id = message.from_user.id
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    c.execute("SELECT tx_id, rub_amount, local_amount, currency, status FROM transfers WHERE user_id=? ORDER BY ROWID DESC LIMIT 5", (user_id,))
+    history = c.fetchall()
+    conn.close()
+
+    if not history:
+        await message.answer("У вас пока нет истории переводов.")
+        return
+
+    text = "<b>📁 Ваши последние переводы:</b>\n\n"
+    for tx in history:
+        status_emoji = "✅" if tx[4] == "SUCCESS" else ("❌" if tx[4] == "REJECTED" else "⏳")
+        text += f"{status_emoji} <code>{tx[0]}</code> | {tx[1]} ➡️ {tx[2]} {tx[3]}\n"
+    
+    await message.answer(text, parse_mode="HTML")
 
 
 async def api_order_handler(request):
-  try:
-    data = await request.json()
-    user_id = data.get("user_id", 0)
+    try:
+        data = await request.json()
+        user_id = data.get("user_id", 0)
 
-    current_time = time.time()
-    if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
-      return web.json_response(
-          {"status": "error", "message": "Подождите минуту перед созданием новой заявки."},
-          status=400,
-      )
-    user_cooldowns[user_id] = current_time
+        user_data = get_user(user_id)
+        if user_data and user_data[3] == 1:
+            return web.json_response({"status": "error", "message": "Аккаунт заблокирован."}, status=403)
 
-    country = data.get("country", "СНГ")
-    rub_amount = data.get("rub_amount", "0")
-    local_received = data.get("local_received", "0")
-    currency = data.get("currency", "VAL")
-    recipient_name = data.get("recipient_name", "Не указано")
-    recipient_card = data.get("recipient_card", "Не указано")
-    transfer_comment = data.get("transfer_comment", "Нет комментария")
-    user_name = data.get("username", "Аноним")
+        country = data.get("country", "СНГ")
+        rub_amount = data.get("rub_amount", "0")
+        local_received = data.get("local_received", "0")
+        currency = data.get("currency", "VAL")
+        recipient_name = data.get("recipient_name", "Не указано")
+        recipient_card = data.get("recipient_card", "Не указано")
+        transfer_comment = data.get("transfer_comment", "Нет комментария")
+        user_name = data.get("username", "Аноним")
 
-    user_info = f"@{user_name}" if user_name != "Аноним" else f"ID: {user_id}"
-    tx_id = f"KP-{random.randint(100000, 999999)}"
+        tx_id = transfer_comment # Используем сгенерированный код как ID транзакции
 
-    admin_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Подтвердить перевод (Пришло)",
-                    callback_data=f"approve_{user_id}_{tx_id}",
-                )
+        # Сохраняем транзакцию в БД
+        conn = sqlite3.connect('koropay.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO transfers VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                  (tx_id, user_id, country, rub_amount, local_received, currency, "PENDING"))
+        conn.commit()
+        conn.close()
+
+        admin_kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Пришло", callback_data=f"approve_{user_id}_{tx_id}")],
+                [InlineKeyboardButton(text="❌ Фейк (Не пришло)", callback_data=f"reject_{user_id}_{tx_id}")]
             ]
-        ]
-    )
+        )
 
-    admin_message = (
-        f"🚨 <b>Новый защищенный перевод! [<code>{tx_id}</code>]</b>\n\n"
-        f"👤 Клиент: {user_info} (ID: <code>{user_id}</code>)\n"
-        f"🌍 Направление: <b>{country}</b>\n"
-        f"🇷🇺 Получено от клиента: <b>{rub_amount} RUB</b>\n"
-        f"💶 К выплате получателю: <b>{local_received} {currency}</b>\n\n"
-        f"📝 <b>Комментарий к платежу:</b> <code>{transfer_comment}</code>\n\n"
-        f"👤 Получатель: <b>{recipient_name}</b>\n"
-        f"💳 Карта получателя: <code>{recipient_card}</code>\n\n"
-        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}) на сумму {rub_amount} RUB с комментарием '{transfer_comment}'. Если всё верно, нажмите кнопку:"
-    )
+        admin_message = (
+            f"🚨 <b>Новый перевод на проверку!</b>\n\n"
+            f"🆔 Транзакция: <code>{tx_id}</code>\n"
+            f"👤 Клиент: @{user_name} (ID: <code>{user_id}</code>)\n"
+            f"🇷🇺 Отправлено: <b>{rub_amount}</b>\n"
+            f"💶 К выплате: <b>{local_received} {currency}</b>\n\n"
+            f"💳 Карта получателя: <code>{recipient_card}</code>\n\n"
+            f"👉 Проверьте поступление с комментарием '{tx_id}'."
+        )
 
-    if ADMIN_CHAT_ID:
-      await bot.send_message(
-          ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb
-      )
+        if ADMIN_CHAT_ID:
+            await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb)
 
-    return web.json_response({"status": "success", "tx_id": tx_id})
-  except Exception as e:
-    logging.error(f"Ошибка API: {e}")
-    return web.json_response({"status": "error", "message": str(e)}, status=400)
+        return web.json_response({"status": "success", "tx_id": tx_id})
+    except Exception as e:
+        logging.error(f"Ошибка API: {e}")
+        return web.json_response({"status": "error", "message": str(e)}, status=400)
 
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def process_approve(callback: types.CallbackQuery):
-  parts = callback.data.split("_")
-  target_user_id = int(parts[1])
-  tx_id = parts[2]
+    parts = callback.data.split("_")
+    target_user_id = int(parts[1])
+    tx_id = parts[2]
 
-  await callback.message.edit_text(
-      callback.message.text
-      + f"\n\n✅ <b>ПЛАТЕЖ ПОДТВЕРЖДЕН И ОТПРАВЛЕН!</b> [Транзакция: {tx_id}]",
-      parse_mode="HTML",
-  )
+    # Обновляем статус в БД
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    c.execute("UPDATE transfers SET status='SUCCESS' WHERE tx_id=?", (tx_id,))
+    conn.commit()
+    conn.close()
 
-  try:
-    success_text = (
-        f"🎉 <b>Ваш перевод успешно выполнен!</b>\n\n"
-        f"🆔 Номер транзакции: <code>{tx_id}</code>\n"
-        f"✅ Средства отправлены получателю.\n\n"
-        f"Благодарим за доверие к <b>Koro Pay</b>!"
-    )
-    await bot.send_message(target_user_id, success_text, parse_mode="HTML")
-  except Exception as e:
-    logging.error(f"Не удалось отправить уведомление клиенту: {e}")
+    await callback.message.edit_text(callback.message.text + f"\n\n✅ <b>ПОДТВЕРЖДЕН</b>", parse_mode="HTML")
+    try:
+        await bot.send_message(target_user_id, f"🎉 <b>Перевод {tx_id} выполнен!</b>\nСредства отправлены получателю.", parse_mode="HTML")
+    except: pass
+    await callback.answer("Перевод подтвержден!")
 
-  await callback.answer("Перевод подтвержден!")
+@dp.callback_query(F.data.startswith("reject_"))
+async def process_reject(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    target_user_id = int(parts[1])
+    tx_id = parts[2]
+
+    # Обновляем статус и даем страйк
+    conn = sqlite3.connect('koropay.db')
+    c = conn.cursor()
+    c.execute("UPDATE transfers SET status='REJECTED' WHERE tx_id=?", (tx_id,))
+    conn.commit()
+    conn.close()
+    add_strike(target_user_id)
+
+    await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ОТКЛОНЕН (ФЕЙК)</b>", parse_mode="HTML")
+    try:
+        await bot.send_message(target_user_id, f"❌ Ваш платеж <code>{tx_id}</code> не найден. Вы получили предупреждение.", parse_mode="HTML")
+    except: pass
+    await callback.answer("Отклонено!")
 
 
 async def webapp_handler(request):
-  # Подставляем актуальные курсы из Python в HTML шаблон
   html_content = f"""
     <!DOCTYPE html>
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Koro Pay — Безопасные переводы</title>
+        <title>Koro Pay</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
-            :root {{
-                --bg-color: #0c0d12;
-                --card-bg: #151721;
-                --card-inner: #1e2130;
-                --accent: #8b5cf6;
-                --accent-gradient: linear-gradient(135deg, #a855f7 0%, #6366f1 100%);
-                --text-main: #ffffff;
-                --text-muted: #9ca3af;
-                --border: rgba(139, 92, 246, 0.2);
-                --success: #22c55e;
-            }}
-            body {{
-                background: var(--bg-color);
-                color: var(--text-main);
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                margin: 0; padding: 16px;
-                display: flex; flex-direction: column; align-items: center;
-                min-height: 100vh; box-sizing: border-box;
-            }}
-            .container {{
-                width: 100%; max-width: 400px; margin: auto;
-                background: var(--card-bg); border: 1px solid var(--border);
-                border-radius: 20px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-                box-sizing: border-box; position: relative;
-            }}
-            h2 {{ margin: 0 0 4px 0; font-size: 20px; text-align: center; }}
-            .subtitle {{ font-size: 11px; color: var(--text-muted); text-align: center; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }}
-            
+            :root {{ --bg-color: #0c0d12; --card-bg: #151721; --card-inner: #1e2130; --accent: #8b5cf6; --text-main: #ffffff; --text-muted: #9ca3af; --border: rgba(139, 92, 246, 0.2); --success: #22c55e; }}
+            body {{ background: var(--bg-color); color: var(--text-main); font-family: -apple-system, sans-serif; margin: 0; padding: 16px; display: flex; justify-content: center; }}
+            .container {{ width: 100%; max-width: 400px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px; padding: 20px; box-sizing: border-box; }}
+            h2 {{ margin: 0 0 4px 0; text-align: center; }}
             .form-group {{ margin-bottom: 14px; }}
-            label {{ font-size: 11px; font-weight: 700; color: var(--text-muted); display: block; margin-bottom: 6px; text-transform: uppercase; }}
-            input, select {{
-                width: 100%; padding: 12px; background: var(--card-inner);
-                border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
-                color: #fff; font-size: 15px; box-sizing: border-box;
-            }}
-            input:focus, select:focus {{ border-color: var(--accent); outline: none; }}
-            
-            .calc-box {{
-                background: rgba(139,92,246,0.08); border: 1px dashed rgba(139,92,246,0.3);
-                border-radius: 10px; padding: 12px; margin-bottom: 16px;
-                display: flex; justify-content: space-between; align-items: center;
-            }}
-            .calc-val {{ font-size: 18px; font-weight: bold; color: #c084fc; }}
-            
-            .security-notice {{
-                font-size: 11px; color: var(--text-muted); background: rgba(239, 68, 68, 0.08);
-                border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 8px; padding: 10px; margin-bottom: 14px; line-height: 1.4;
-            }}
-            
-            .checkbox-group {{
-                display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-muted); margin-bottom: 16px;
-            }}
-            .checkbox-group input {{ width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent); }}
-            .link {{ color: #c084fc; text-decoration: underline; cursor: pointer; }}
-
-            button.main-btn {{
-                width: 100%; padding: 14px; background: var(--accent-gradient);
-                color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: bold;
-                cursor: pointer; box-shadow: 0 4px 15px rgba(139,92,246,0.4);
-            }}
-            
+            label {{ font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 6px; text-transform: uppercase; }}
+            input, select {{ width: 100%; padding: 12px; background: var(--card-inner); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; color: #fff; box-sizing: border-box; }}
+            .calc-box {{ background: rgba(139,92,246,0.08); border: 1px dashed rgba(139,92,246,0.3); border-radius: 10px; padding: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; }}
+            button.main-btn {{ width: 100%; padding: 14px; background: linear-gradient(135deg, #a855f7 0%, #6366f1 100%); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }}
             .screen {{ display: none; }}
             .active {{ display: block; }}
-            
-            .req-box {{
-                background: var(--card-inner); border: 1px solid var(--border);
-                border-radius: 12px; padding: 14px; margin: 12px 0; text-align: left;
-            }}
-            .copy-btn {{
-                background: rgba(139,92,246,0.2); border: 1px solid var(--accent);
-                color: #c084fc; padding: 8px; border-radius: 8px; font-size: 13px;
-                font-weight: bold; cursor: pointer; width: 100%; margin-top: 8px;
-            }}
-            .timer {{
-                font-size: 14px; color: #f59e0b; text-align: center; font-weight: bold; margin-bottom: 10px;
-            }}
-
-            /* Модальное окно Оферты */
-            .modal-overlay {{
-                display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.8); z-index: 100; justify-content: center; align-items: center; padding: 16px; box-sizing: border-box;
-            }}
-            .modal-content {{
-                background: var(--card-bg); border: 1px solid var(--border); border-radius: 16px;
-                padding: 20px; width: 100%; max-width: 360px; max-height: 80vh; overflow-y: auto;
-            }}
-            .modal-content h3 {{ margin-top: 0; font-size: 18px; color: #fff; }}
-            .modal-content p {{ font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }}
-            .close-modal {{
-                background: var(--card-inner); border: 1px solid var(--border); color: #fff;
-                padding: 10px; width: 100%; border-radius: 8px; margin-top: 10px; cursor: pointer;
-            }}
+            .req-box {{ background: var(--card-inner); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin: 12px 0; }}
+            .copy-btn {{ background: rgba(139,92,246,0.2); color: #c084fc; padding: 8px; border: none; border-radius: 8px; width: 100%; margin-top: 8px; cursor: pointer; font-weight: bold; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <!-- ЭКРАН 1: ВВОД ДАННЫХ -->
             <div id="screenForm" class="screen active">
                 <h2>Koro Pay</h2>
-                <div class="subtitle">Защищенные переводы в СНГ</div>
-
                 <div class="form-group">
-                    <label for="country">Страна назначения</label>
+                    <label>Страна назначения</label>
                     <select id="country" onchange="calculateLocal()">
                         <option value="Uzbekistan|UZS|{EXCHANGE_RATES['UZS']}">🇺🇿 Узбекистан (UZS)</option>
                         <option value="Tajikistan|TJS|{EXCHANGE_RATES['TJS']}">🇹🇯 Таджикистан (TJS)</option>
@@ -294,221 +262,91 @@ async def webapp_handler(request):
                         <option value="Azerbaijan|AZN|{EXCHANGE_RATES['AZN']}">🇦🇿 Азербайджан (AZN)</option>
                     </select>
                 </div>
-
                 <div class="form-group">
-                    <label for="amount">Сумма отправки (в рублях)</label>
+                    <label>Сумма (в рублях)</label>
                     <input type="number" id="amount" placeholder="Макс. 25 000 ₽" oninput="calculateLocal()">
                 </div>
-
                 <div class="calc-box">
                     <span>Получатель заберет:</span>
-                    <span class="calc-val" id="totalLocal">0.00 UZS</span>
+                    <span id="totalLocal" style="color:#c084fc; font-weight:bold;">0.00 UZS</span>
                 </div>
-
-                <div class="form-group">
-                    <label for="recName">ФИО получателя</label>
-                    <input type="text" id="recName" placeholder="Иван Иванов">
-                </div>
-
-                <div class="form-group">
-                    <label for="recCard">Номер карты получателя</label>
-                    <input type="text" id="recCard" placeholder="Номер карты">
-                </div>
-
-                <div class="security-notice">
-                    🛡 <b>Безопасность:</b> Перевод должен осуществляться строго с вашей личной карты. Третьи лица не допускаются.
-                </div>
-
-                <div class="checkbox-group">
-                    <input type="checkbox" id="termsCheck">
-                    <label for="termsCheck" style="text-transform: none; display: inline; color: var(--text-muted); cursor: pointer;">
-                        Я согласен с <span class="link" onclick="openModal(event)">условиями оферты</span> и подтверждаю легальность средств.
-                    </label>
-                </div>
-
+                <div class="form-group"><input type="text" id="recName" placeholder="ФИО получателя"></div>
+                <div class="form-group"><input type="text" id="recCard" placeholder="Номер карты"></div>
                 <button class="main-btn" onclick="submitForm()">Продолжить</button>
             </div>
 
-            <!-- ЭКРАН 2: ОПЛАТА -->
             <div id="screenPay" class="screen">
-                <h2>Оплата перевода</h2>
-                <div class="subtitle">Защищенный шлюз</div>
-                <div class="timer" id="timerDisplay">Осталось времени: 15:00</div>
-
+                <h2>Оплата</h2>
                 <div class="req-box">
-                    <div style="font-size: 11px; color: var(--text-muted);">К ОПЛАТЕ:</div>
-                    <div id="payRubSum" style="font-size: 20px; font-weight: bold; color: #c084fc; margin-top: 4px;">0 ₽</div>
+                    <div style="font-size: 11px; color: #9ca3af;">КОММЕНТАРИЙ К ПЕРЕВОДУ (ОБЯЗАТЕЛЬНО):</div>
+                    <div id="transferCommentText" style="font-size: 18px; color: #f59e0b; font-weight:bold; margin-top:4px;"></div>
+                    <button class="copy-btn" id="copyCommentBtn" onclick="copyComment()">📋 Скопировать</button>
                 </div>
-                
                 <div class="req-box">
-                    <div style="font-size: 11px; color: var(--text-muted);">ОБЯЗАТЕЛЬНЫЙ КОММЕНТАРИЙ К ПЕРЕВОДУ:</div>
-                    <div id="transferCommentText" style="font-size: 18px; font-weight: bold; margin-top: 4px; color: #f59e0b;">KORO-0000</div>
-                    <button class="copy-btn" id="copyCommentBtn" onclick="copyComment()">📋 Скопировать комментарий</button>
-                </div>
-
-                <div class="req-box">
-                    <div style="font-size: 11px; color: var(--text-muted);">РЕКВИЗИТЫ ({RECEIVE_BANK}):</div>
-                    <div style="font-size: 16px; font-weight: bold; margin-top: 4px; word-break: break-all;">{RECEIVE_CARD}</div>
-                    <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Получатель: <b>{RECEIVE_HOLDER}</b></div>
+                    <div style="font-size: 11px; color: #9ca3af;">СУММА И РЕКВИЗИТЫ:</div>
+                    <div id="payRubSum" style="font-size: 20px; color: #c084fc; font-weight:bold;">0 ₽</div>
+                    <div style="font-size: 16px; margin-top: 8px;">{RECEIVE_BANK}</div>
+                    <div style="font-size: 18px; font-weight: bold;">{RECEIVE_CARD}</div>
                     <button class="copy-btn" id="copyCardBtn" onclick="copyCard()">📋 Скопировать карту</button>
                 </div>
-
-                <button class="main-btn" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(34,197,94,0.4);">Я оплатил(а)</button>
+                <button class="main-btn" onclick="confirmPayment()" style="background: #22c55e;">Я оплатил(а)</button>
             </div>
-
-            <!-- ЭКРАН 3: УСПЕШНАЯ ОТПРАВКА -->
+            
             <div id="screenWait" class="screen" style="text-align: center;">
                 <div style="font-size: 40px; margin: 20px 0;">✅</div>
-                <h3 style="margin: 0 0 8px 0;">Заявка отправлена!</h3>
-                <p style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
-                    Мы проверяем поступление средств. Уведомление об успешном переводе придет вам прямо в этот чат от бота.
-                </p>
-                <button class="main-btn" onclick="tg.close()" style="margin-top: 20px; background: var(--card-inner); border: 1px solid var(--accent); box-shadow: none;">Вернуться в чат</button>
-            </div>
-        </div>
-
-        <!-- МОДАЛЬНОЕ ОКНО ОФЕРТЫ -->
-        <div id="termsModal" class="modal-overlay">
-            <div class="modal-content">
-                <h3>Условия использования (Оферта)</h3>
-                <p><b>1. Общие положения.</b> Koro Pay предоставляет услуги по содействию в P2P-переводах. Пользователь гарантирует легальное происхождение средств.</p>
-                <p><b>2. Курс и комиссии.</b> Расчетный курс фиксируется в момент оформления заявки и включает в себя сервисные сборы. Сумма к получению является окончательной.</p>
-                <p><b>3. Безопасность (AML).</b> Запрещено использование сервиса в мошеннических целях. Перевод должен осуществляться исключительно с личных счетов Пользователя (запрет третьих лиц).</p>
-                <p><b>4. Ответственность.</b> Сервис не несет ответственности за переводы по ошибочно указанным реквизитам. После успешной отправки средств на международные реквизиты отмена операции и возврат средств невозможны.</p>
-                <button class="close-modal" onclick="closeModal()">Закрыть и продолжить</button>
+                <h3>Заявка отправлена!</h3>
+                <button class="main-btn" onclick="tg.close()" style="margin-top: 20px;">Вернуться в чат</button>
             </div>
         </div>
 
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
-
-            let currentMultiplier = 135;
-            let currentCurr = 'UZS';
-            let enteredRub = 0;
-            let calculatedLocal = 0;
-            let timerInterval;
-            let currentOrderCode = '';
-
+            let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '';
+            
             window.onload = function() {{ calculateLocal(); }};
-
-            function openModal(e) {{
-                e.preventDefault();
-                e.stopPropagation();
-                document.getElementById('termsModal').style.display = 'flex';
-            }}
-            function closeModal() {{
-                document.getElementById('termsModal').style.display = 'none';
-            }}
 
             function calculateLocal() {{
                 let val = document.getElementById('country').value.split('|');
-                currentCurr = val[1];
-                currentMultiplier = parseFloat(val[2]);
-
+                currentCurr = val[1]; currentMultiplier = parseFloat(val[2]);
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
-                
-                // РАСЧЕТ С УЧЕТОМ КОПЕЕК (сотых долей)
                 calculatedLocal = enteredRub * currentMultiplier;
-                
-                // Форматируем до 2 знаков после запятой
-                let displayValue = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) : '0.00';
-                
-                document.getElementById('totalLocal').textContent = displayValue + ' ' + currentCurr;
+                document.getElementById('totalLocal').textContent = (enteredRub > 0 ? calculatedLocal.toFixed(2) : '0.00') + ' ' + currentCurr;
             }}
 
-            function copyCard() {{
-                navigator.clipboard.writeText("{RECEIVE_CARD}".replace(/\\s+/g, ''));
-                let btn = document.getElementById('copyCardBtn');
-                btn.textContent = '✅ Скопировано!';
-                setTimeout(() => {{ btn.textContent = '📋 Скопировать карту'; }}, 2000);
-            }}
+            function copyCard() {{ navigator.clipboard.writeText("{RECEIVE_CARD}".replace(/\\s+/g, '')); document.getElementById('copyCardBtn').textContent = '✅'; }}
+            function copyComment() {{ navigator.clipboard.writeText(currentOrderCode); document.getElementById('copyCommentBtn').textContent = '✅'; }}
 
-            function copyComment() {{
-                navigator.clipboard.writeText(currentOrderCode);
-                let btn = document.getElementById('copyCommentBtn');
-                btn.textContent = '✅ Скопировано!';
-                setTimeout(() => {{ btn.textContent = '📋 Скопировать комментарий'; }}, 2000);
-            }}
-
-            function startTimer(duration) {{
-                let timer = duration, minutes, seconds;
-                clearInterval(timerInterval);
-                timerInterval = setInterval(function () {{
-                    minutes = parseInt(timer / 60, 10);
-                    seconds = parseInt(timer % 60, 10);
-                    minutes = minutes < 10 ? "0" + minutes : minutes;
-                    seconds = seconds < 10 ? "0" + seconds : seconds;
-                    document.getElementById('timerDisplay').textContent = "Осталось времени: " + minutes + ":" + seconds;
-                    if (--timer < 0) {{
-                        clearInterval(timerInterval);
-                        alert('Время ожидания истекло. Создайте заявку заново.');
-                        location.reload();
-                    }}
-                }}, 1000);
-            }}
-
-            async function submitForm() {{
+            function submitForm() {{
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
-                let name = document.getElementById('recName').value.trim();
-                let card = document.getElementById('recCard').value.trim();
-                let termsChecked = document.getElementById('termsCheck').checked;
-
-                if (enteredRub <= 0) {{ alert('Введите сумму перевода в рублях!'); return; }}
-                if (enteredRub > 25000) {{ alert('Максимальная сумма отправки составляет 25 000 рублей!'); return; }}
-                if (!name || !card) {{ alert('Заполните данные получателя!'); return; }}
-                if (!termsChecked) {{ alert('Необходимо согласиться с условиями оферты!'); return; }}
-
+                if (enteredRub <= 0 || enteredRub > 25000 || !document.getElementById('recName').value || !document.getElementById('recCard').value) {{ alert('Проверьте данные!'); return; }}
                 currentOrderCode = 'KORO-' + Math.floor(1000 + Math.random() * 9000);
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
-
-                document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
+                document.getElementById('payRubSum').textContent = enteredRub + ' ₽';
                 document.getElementById('screenForm').classList.remove('active');
                 document.getElementById('screenPay').classList.add('active');
-                startTimer(900);
             }}
 
             async function confirmPayment() {{
-                let countrySelect = document.getElementById('country');
-                let countryName = countrySelect.options[countrySelect.selectedIndex].text;
-                let name = document.getElementById('recName').value;
-                let card = document.getElementById('recCard').value;
-                let user = (tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {{}};
-
-                clearInterval(timerInterval);
-                
-                // Захватываем отформатированное значение для передачи в админку
-                let formattedLocal = calculatedLocal.toLocaleString('ru-RU', {{minimumFractionDigits: 2, maximumFractionDigits: 2}});
-
+                let user = tg.initDataUnsafe?.user || {{}};
                 try {{
                     let response = await fetch('/api/order', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
+                        method: 'POST', headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{
-                            country: countryName,
+                            country: document.getElementById('country').value.split('|')[0],
                             rub_amount: enteredRub + ' ₽',
-                            local_received: formattedLocal,
+                            local_received: calculatedLocal.toFixed(2),
                             currency: currentCurr,
-                            recipient_name: name,
-                            recipient_card: card,
+                            recipient_name: document.getElementById('recName').value,
+                            recipient_card: document.getElementById('recCard').value,
                             transfer_comment: currentOrderCode,
-                            username: user.username || 'Аноним',
-                            user_id: user.id || 0
+                            username: user.username || 'Аноним', user_id: user.id || 0
                         }})
                     }});
-                    let result = await response.json();
-                    if (!response.ok) {{ 
-                        alert(result.message || 'Ошибка обработки.'); 
-                        location.reload(); 
-                        return;
-                    }}
-                    
+                    if (!response.ok) {{ alert('Ошибка. Возможно, аккаунт заблокирован.'); tg.close(); return; }}
                     document.getElementById('screenPay').classList.remove('active');
                     document.getElementById('screenWait').classList.add('active');
-                    
-                }} catch (e) {{ 
-                    alert('Ошибка связи с сервером.'); 
-                }}
+                }} catch (e) {{ alert('Ошибка связи.'); }}
             }}
         </script>
     </body>
@@ -516,25 +354,17 @@ async def webapp_handler(request):
     """
   return web.Response(text=html_content, content_type="text/html")
 
-
 async def main():
+  init_db() # Создаем базу данных при старте
   app = web.Application()
   app.router.add_get("/", webapp_handler)
   app.router.add_post("/api/order", api_order_handler)
-
   runner = web.AppRunner(app)
   await runner.setup()
-  port = int(os.environ.get("PORT", 8080))
-  site = web.TCPSite(runner, "0.0.0.0", port)
+  site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080)))
   await site.start()
-  
-  # Запуск парсера актуальных курсов в фоновом режиме
   asyncio.create_task(update_rates())
-  
-  logging.info(f"Защищенный сервер запущен на порту {port}...")
-  logging.info("Бот Koro Pay запущен...")
   await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
   asyncio.run(main())
