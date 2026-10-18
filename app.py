@@ -6,12 +6,18 @@ import random
 import time
 import sqlite3
 import aiohttp
+import urllib.request
+from datetime import datetime
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     WebAppInfo,
+    BufferedInputFile
 )
 from aiohttp import web
 
@@ -37,10 +43,8 @@ dp = Dispatcher()
 def init_db():
     conn = sqlite3.connect('koropay.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id INTEGER PRIMARY KEY, username TEXT, strikes INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS transfers 
-                 (tx_id TEXT PRIMARY KEY, user_id INTEGER, country TEXT, rub_amount TEXT, local_amount TEXT, currency TEXT, status TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, strikes INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS transfers (tx_id TEXT PRIMARY KEY, user_id INTEGER, country TEXT, rub_amount TEXT, local_amount TEXT, currency TEXT, status TEXT)''')
     conn.commit()
     conn.close()
 
@@ -77,6 +81,49 @@ async def update_rates():
         except Exception as e:
             logging.error(f"Ошибка обновления курсов: {e}")
         await asyncio.sleep(3600)
+
+def generate_receipt_image(tx_id, rub, local, currency, name, card):
+    font_path = "Roboto-Medium.ttf"
+    if not os.path.exists(font_path):
+        urllib.request.urlretrieve("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Medium.ttf", font_path)
+    
+    font_title = ImageFont.truetype(font_path, 36)
+    font_text = ImageFont.truetype(font_path, 22)
+    font_small = ImageFont.truetype(font_path, 16)
+
+    img = Image.new('RGB', (600, 750), color='#05050C')
+    draw = ImageDraw.Draw(img)
+
+    draw.text((300, 60), "Koro Pay", font=font_title, fill='#9667E0', anchor="mm")
+    draw.text((300, 100), "ОФИЦИАЛЬНЫЙ ЧЕК", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.line((50, 140, 550, 140), fill='#1C1D33', width=3)
+
+    y = 180
+    spacing = 65
+    
+    details = [
+        ("Статус перевода:", "ВЫПОЛНЕН ✅", '#30D158'),
+        ("Код транзакции:", tx_id, '#FFFFFF'),
+        ("Дата и время:", datetime.now().strftime("%d.%m.%Y %H:%M"), '#FFFFFF'),
+        ("Сумма списания:", f"{rub}", '#FFFFFF'),
+        ("Сумма зачисления:", f"{local} {currency}", '#7C83FD'),
+        ("ФИО получателя:", name, '#FFFFFF'),
+        ("Карта получателя:", card, '#FFFFFF')
+    ]
+
+    for label, val, color in details:
+        draw.text((50, y), label, font=font_text, fill='#8A8E9E')
+        draw.text((550, y), val, font=font_text, fill=color, anchor="ra")
+        y += spacing
+
+    draw.line((50, y, 550, y), fill='#1C1D33', width=3)
+    draw.text((300, y + 40), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
+
+    bio = BytesIO()
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
+
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -157,20 +204,22 @@ async def api_order_handler(request):
 
         admin_kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Пришло", callback_data=f"approve_{user_id}_{tx_id}")],
-                [InlineKeyboardButton(text="❌ Фейк (Не пришло)", callback_data=f"reject_{user_id}_{tx_id}")]
+                [InlineKeyboardButton(text="✅ Перевод получателю выполнен", callback_data=f"approve_{user_id}_{tx_id}")],
+                [InlineKeyboardButton(text="❌ Перевод не выполнен (Отмена)", callback_data=f"reject_{user_id}_{tx_id}")]
             ]
         )
 
         admin_message = (
-            f"🚨 <b>Новый перевод!</b>\n\n"
-            f"🆔 Транзакция: <code>{tx_id}</code>\n"
+            f"🚨 <b>НОВАЯ ЗАЯВКА НА ПЕРЕВОД!</b>\n\n"
             f"👤 Клиент: @{user_name} (ID: <code>{user_id}</code>)\n"
-            f"🇷🇺 Отправлено: <b>{rub_amount}</b>\n"
-            f"💶 К выплате: <b>{local_received} {currency}</b>\n\n"
-            f"💳 Карта получателя: <code>{recipient_card}</code>\n"
-            f"👤 Имя получателя: <b>{recipient_name}</b>\n\n"
-            f"👉 Проверьте {RECEIVE_BANK} ({RECEIVE_CARD}) с комментарием '{tx_id}'."
+            f"🆔 Транзакция: <code>{tx_id}</code>\n\n"
+            f"<b>ИНСТРУКЦИЯ ДЛЯ ТЕБЯ:</b>\n"
+            f"1️⃣ Проверь поступление <b>{rub_amount}</b> на {RECEIVE_BANK} с комментарием <code>{tx_id}</code>.\n"
+            f"2️⃣ Переведи <b>{local_received} {currency}</b> получателю:\n"
+            f"   💳 Карта: <code>{recipient_card}</code>\n"
+            f"   👤 ФИО: <b>{recipient_name}</b>\n"
+            f"   🌍 Страна: {country}\n"
+            f"3️⃣ После перевода нажми зеленую кнопку. Клиент получит уведомление и чек."
         )
 
         if ADMIN_CHAT_ID:
@@ -189,15 +238,37 @@ async def process_approve(callback: types.CallbackQuery):
 
     conn = sqlite3.connect('koropay.db')
     c = conn.cursor()
+    c.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=?", (tx_id,))
+    tx_data = c.fetchone()
+    
     c.execute("UPDATE transfers SET status='SUCCESS' WHERE tx_id=?", (tx_id,))
     conn.commit()
     conn.close()
 
-    await callback.message.edit_text(callback.message.text + f"\n\n✅ <b>ПОДТВЕРЖДЕН</b>", parse_mode="HTML")
+    await callback.message.edit_text(callback.message.text + f"\n\n✅ <b>ПЕРЕВОД УСПЕШНО ЗАВЕРШЕН И ЧЕК ОТПРАВЛЕН!</b>", parse_mode="HTML")
+    
     try:
-        await bot.send_message(target_user_id, f"🎉 <b>Перевод {tx_id} выполнен!</b>\nСредства отправлены получателю.", parse_mode="HTML")
-    except: pass
-    await callback.answer("Перевод подтвержден!")
+        if tx_data:
+            msg_text = callback.message.text
+            card = msg_text.split("Карта: ")[1].split("\n")[0]
+            name = msg_text.split("ФИО: ")[1].split("\n")[0]
+            
+            image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, card)
+            photo = BufferedInputFile(image_buffer.getvalue(), filename=f"Receipt_{tx_id}.png")
+            
+            success_text = (
+                f"🎉 <b>Ваш перевод успешно завершен!</b>\n\n"
+                f"Уведомляем вас о том, что <b>получатель успешно получил денежные средства</b> на свой счет.\n\n"
+                f"🆔 Транзакция: <code>{tx_id}</code>\n\n"
+                f"Прикрепляем официальный электронный чек по вашей операции. Благодарим за выбор Koro Pay!"
+            )
+            await bot.send_photo(target_user_id, photo=photo, caption=success_text, parse_mode="HTML")
+        else:
+            await bot.send_message(target_user_id, f"🎉 <b>Перевод {tx_id} выполнен! Получатель получил средства.</b>", parse_mode="HTML")
+    except Exception as e: 
+        logging.error(f"Ошибка отправки чека: {e}")
+        
+    await callback.answer("Уведомление и чек отправлены!")
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def process_reject(callback: types.CallbackQuery):
@@ -212,11 +283,11 @@ async def process_reject(callback: types.CallbackQuery):
     conn.close()
     add_strike(target_user_id)
 
-    await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ОТКЛОНЕН (ФЕЙК)</b>", parse_mode="HTML")
+    await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ПЕРЕВОД НЕ ВЫПОЛНЕН (ОТМЕНА)</b>", parse_mode="HTML")
     try:
-        await bot.send_message(target_user_id, f"❌ Ваш платеж <code>{tx_id}</code> не найден. Вы получили предупреждение. За 3 ложных заявки аккаунт блокируется.", parse_mode="HTML")
+        await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> <b>не выполнен</b> (платеж не найден или отменен). Заявка аннулирована.", parse_mode="HTML")
     except: pass
-    await callback.answer("Отклонено!")
+    await callback.answer("Перевод отменен!")
 
 async def webapp_handler(request):
   html_content = f"""
@@ -230,28 +301,14 @@ async def webapp_handler(request):
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
             :root {{
-                /* Фирменные цвета логотипа Koro Pay */
-                --bg: #05050C;
-                --surface: #121322;
-                --surface-hover: #1C1D33;
-                --primary: #9667E0;
-                --primary-light: #7C83FD;
+                --bg: #05050C; --surface: #121322; --surface-hover: #1C1D33;
+                --primary: #9667E0; --primary-light: #7C83FD;
                 --primary-grad: linear-gradient(135deg, #7C83FD 0%, #9667E0 100%);
-                --text: #FFFFFF;
-                --text-sec: #8A8E9E;
-                --border: rgba(124, 131, 253, 0.15);
-                --success: #30D158;
-                --danger: #FF453A;
-                --warning: #FF9F0A;
+                --text: #FFFFFF; --text-sec: #8A8E9E; --border: rgba(124, 131, 253, 0.15);
+                --success: #30D158; --danger: #FF453A; --warning: #FF9F0A;
             }}
             * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
-            body {{
-                background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif;
-                margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
-                overflow: hidden;
-            }}
-            
-            /* Header & Logo */
+            body {{ background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }}
             .header {{ padding: 20px 20px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); }}
             .logo-container {{ display: flex; align-items: center; gap: 12px; }}
             .logo-img {{ width: 42px; height: 42px; border-radius: 10px; object-fit: cover; background: var(--surface); }}
@@ -269,44 +326,25 @@ async def webapp_handler(request):
             .input-group:last-child {{ margin-bottom: 0; }}
             label {{ display: block; font-size: 11px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }}
             
-            input, select {{
-                width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border);
-                border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif;
-                transition: border-color 0.2s; outline: none; font-weight: 500;
-            }}
+            input, select {{ width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }}
             input:focus, select:focus {{ border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }}
             
             .quick-amounts {{ display: flex; gap: 8px; margin-top: 10px; }}
-            .quick-btn {{
-                flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light);
-                border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s;
-            }}
+            .quick-btn {{ flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }}
             .quick-btn:active {{ background: var(--primary); color: #fff; }}
             
             .receipt-row {{ display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 10px; color: var(--text-sec); }}
             .receipt-row.total {{ font-size: 18px; font-weight: 800; color: var(--text); margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); margin-bottom: 0; }}
             
-            .btn-primary {{
-                width: 100%; padding: 16px; background: var(--primary-grad); color: #fff;
-                border: none; border-radius: 14px; font-size: 16px; font-weight: 700;
-                cursor: pointer; display: flex; justify-content: center; align-items: center;
-                box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s;
-            }}
+            .btn-primary {{ width: 100%; padding: 16px; background: var(--primary-grad); color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s; }}
             .btn-primary:active {{ opacity: 0.8; }}
-            .btn-copy {{
-                background: var(--surface-hover); color: var(--primary-light); padding: 12px;
-                border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer;
-            }}
+            .btn-copy {{ background: var(--surface-hover); color: var(--primary-light); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }}
 
             .checkbox-wrapper {{ display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }}
             .checkbox-wrapper input {{ width: 22px; height: 22px; accent-color: var(--primary); }}
             .link {{ color: var(--primary-light); text-decoration: none; font-weight: 600; cursor: pointer; }}
             
-            .bottom-nav {{
-                position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(5, 5, 12, 0.9);
-                backdrop-filter: blur(10px); border-top: 1px solid var(--border);
-                display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50;
-            }}
+            .bottom-nav {{ position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(5, 5, 12, 0.9); backdrop-filter: blur(10px); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }}
             .nav-item {{ display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; }}
             .nav-item.active {{ color: var(--primary-light); }}
             .nav-icon {{ font-size: 22px; margin-bottom: 4px; }}
@@ -333,20 +371,15 @@ async def webapp_handler(request):
     <body>
         <div class="header">
             <div class="logo-container">
-                <!-- Загрузи картинку logo.png в свой репозиторий GitHub, чтобы она появилась здесь -->
                 <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/logo.png" alt="Logo" class="logo-img" onerror="this.style.display='none'">
                 <div>
                     <div class="header-title">Koro<span>Pay</span></div>
                     <div class="tagline">Платежи. Переводы. Больше.</div>
                 </div>
             </div>
-            <div style="width: 36px; height: 36px; border-radius: 12px; background: var(--surface-hover); border: 1px solid var(--border); display: flex; justify-content: center; align-items: center; font-size: 18px;">
-                👤
-            </div>
         </div>
 
         <div class="content">
-            <!-- Вкладка 1: ПЕРЕВОД -->
             <div id="tab-transfer" class="screen active">
                 <div class="card-panel">
                     <div class="input-group">
@@ -406,7 +439,6 @@ async def webapp_handler(request):
                 <button class="btn-primary" onclick="initiateTransfer()">Продолжить</button>
             </div>
 
-            <!-- Вкладка 2: ОПЛАТА (ШЛЮЗ) -->
             <div id="tab-payment" class="screen">
                 <div style="text-align: center; margin-bottom: 24px;">
                     <div style="font-size: 48px; margin-bottom: 10px; filter: drop-shadow(0 0 15px var(--primary-light));">🛡</div>
@@ -432,10 +464,9 @@ async def webapp_handler(request):
                     <button class="btn-copy" id="btnCopyCard" onclick="copyText('{RECEIVE_CARD}', 'btnCopyCard')">Скопировать номер карты</button>
                 </div>
 
-                <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Платеж выполнен</button>
+                <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
             </div>
 
-            <!-- Вкладка 3: ИСТОРИЯ -->
             <div id="tab-history" class="screen">
                 <h2 style="margin-bottom: 20px; font-weight: 800;">История операций</h2>
                 <div class="card-panel" id="historyContainer">
@@ -443,60 +474,43 @@ async def webapp_handler(request):
                 </div>
             </div>
 
-            <!-- Вкладка 4: ПРОФИЛЬ -->
             <div id="tab-profile" class="screen">
                 <h2 style="margin-bottom: 20px; font-weight: 800;">Мой Профиль</h2>
                 <div class="card-panel">
                     <div class="receipt-row" style="padding: 14px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;" onclick="openModal('ofertaModal')">
-                        <span style="font-weight:600; color:var(--text); display:flex; align-items:center; gap:8px;">📄 Договор Оферты</span>
-                        <span style="color:var(--primary-light);">›</span>
-                    </div>
-                    <div class="receipt-row" style="padding: 14px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;" onclick="tg.openTelegramLink('https://t.me/your_admin_username')">
-                        <span style="font-weight:600; color:var(--text); display:flex; align-items:center; gap:8px;">🎧 Служба поддержки</span>
-                        <span style="color:var(--primary-light);">›</span>
+                        <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary-light);">›</span>
                     </div>
                     <div class="receipt-row" style="padding: 14px 0; margin:0;">
-                        <span style="font-weight:600; color:var(--text);">Версия системы</span>
-                        <span style="color:var(--text-sec); font-family:monospace;">KoroPay v3.0 Neo</span>
+                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">KoroPay v4.1 Neo</span>
                     </div>
                 </div>
             </div>
 
-            <!-- Экран успеха -->
-            <div id="tab-success" class="screen" style="text-align: center; padding-top: 60px;">
-                <div style="font-size: 70px; margin-bottom: 24px; filter: drop-shadow(0 0 20px var(--success));">✅</div>
-                <h2 style="margin-bottom: 12px; font-weight: 800;">Средства в обработке</h2>
-                <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px;">Ваш платеж успешно зарегистрирован и передан в финансовый отдел. Чек поступит в этот чат.</p>
-                <button class="btn-primary" onclick="tg.close()">Отлично</button>
+            <div id="tab-success" class="screen" style="text-align: center; padding-top: 40px;">
+                <div style="font-size: 70px; margin-bottom: 20px; filter: drop-shadow(0 0 20px var(--primary-light));">⏳</div>
+                <h2 style="margin-bottom: 12px; font-weight: 800;">Ожидание перевода</h2>
+                <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px; background: var(--surface); padding: 20px; border-radius: 16px; border: 1px solid var(--border);">
+                    Мы проверяем поступление вашего платежа. <br><br>
+                    Как только средства будут подтверждены, <b>наш администратор осуществит перевод получателю</b> в страну назначения.<br><br>
+                    Вы получите уведомление о доставке средств и официальный чек прямо в этот чат.
+                </p>
+                <button class="btn-primary" onclick="tg.close()">Отлично, жду чек</button>
             </div>
         </div>
 
-        <!-- Навигация -->
         <div class="bottom-nav" id="bottomNav">
-            <div class="nav-item active" onclick="switchTab('tab-transfer', this)">
-                <div class="nav-icon">💸</div>
-                <div>Перевод</div>
-            </div>
-            <div class="nav-item" onclick="switchTab('tab-history', this); loadHistory();">
-                <div class="nav-icon">🕒</div>
-                <div>История</div>
-            </div>
-            <div class="nav-item" onclick="switchTab('tab-profile', this)">
-                <div class="nav-icon">⚙️</div>
-                <div>Профиль</div>
-            </div>
+            <div class="nav-item active" onclick="switchTab('tab-transfer', this)"><div class="nav-icon">💸</div><div>Перевод</div></div>
+            <div class="nav-item" onclick="switchTab('tab-history', this); loadHistory();"><div class="nav-icon">🕒</div><div>История</div></div>
+            <div class="nav-item" onclick="switchTab('tab-profile', this)"><div class="nav-icon">⚙️</div><div>Профиль</div></div>
         </div>
 
-        <!-- Модальное окно ОФЕРТЫ -->
         <div id="ofertaModal" class="modal" onclick="if(event.target==this) closeModal('ofertaModal')">
             <div class="modal-content legal-text">
                 <div class="modal-close"></div>
-                <h3>Договор-оферта сервиса Koro Pay</h3>
-                <p><b>1. Предмет соглашения.</b> Настоящая Оферта является официальным предложением сервиса Koro Pay по предоставлению информационно-технологического шлюза для осуществления международных P2P переводов.</p>
-                <p><b>2. Противодействие мошенничеству (AML).</b> Пользователь гарантирует легальное происхождение переводимых средств. Строго запрещено использование карт третьих лиц. При выявлении подозрительных операций Сервис вправе заморозить заявку и запросить верификацию (KYC).</p>
-                <p><b>3. Финансовые условия.</b> Расчетный курс фиксируется в момент оформления заявки сроком на 15 минут. Комиссия Сервиса уже включена в отображаемый курс конвертации.</p>
-                <p><b>4. Порядок исполнения и возвраты.</b> Обязательства Сервиса считаются выполненными в момент отправки средств по указанным Пользователем реквизитам. Возврат средств после успешной отправки в иностранный банк невозможен.</p>
-                <p><b>5. Ответственность.</b> Сервис не несет финансовой ответственности за ошибки, допущенные Пользователем при вводе номера карты или ФИО получателя.</p>
+                <h3>Договор-оферта Koro Pay</h3>
+                <p><b>1. Предмет.</b> Предоставление шлюза для международных P2P переводов.</p>
+                <p><b>2. AML.</b> Запрещено использование карт третьих лиц. При подозрениях Сервис может запросить верификацию.</p>
+                <p><b>3. Исполнение.</b> Обязательства Сервиса считаются выполненными в момент зачисления средств на счет получателя. Возврат средств после отправки невозможен.</p>
                 <button class="btn-primary" style="margin-top: 24px;" onclick="closeModal('ofertaModal')">Я ознакомлен</button>
             </div>
         </div>
@@ -506,12 +520,9 @@ async def webapp_handler(request):
             tg.expand();
             tg.ready();
 
-            let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0;
-            let currentOrderCode = '', timerInterval;
+            let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
 
-            window.onload = function() {{
-                calculateParams();
-            }};
+            window.onload = function() {{ calculateParams(); }};
 
             function haptic() {{ if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); }}
 
@@ -533,16 +544,11 @@ async def webapp_handler(request):
                 input.value = val.match(/.{{1,4}}/g)?.join(' ') || '';
             }}
 
-            function setAmount(val) {{
-                haptic();
-                document.getElementById('amount').value = val;
-                calculateParams();
-            }}
+            function setAmount(val) {{ haptic(); document.getElementById('amount').value = val; calculateParams(); }}
 
             function calculateParams() {{
                 let val = document.getElementById('country').value.split('|');
-                currentCurr = val[1]; 
-                currentMultiplier = parseFloat(val[2]);
+                currentCurr = val[1]; currentMultiplier = parseFloat(val[2]);
                 
                 document.getElementById('rateDisplay').textContent = `1 ₽ = ${{currentMultiplier.toFixed(2)}} ${{currentCurr}}`;
                 
@@ -592,9 +598,7 @@ async def webapp_handler(request):
                             </div>
                         `;
                     }});
-                }} catch(e) {{
-                    container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>';
-                }}
+                }} catch(e) {{ container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>'; }}
             }}
 
             function startTimer(duration) {{
@@ -657,6 +661,7 @@ async def webapp_handler(request):
     """
   return web.Response(text=html_content, content_type="text/html")
 
+
 async def main():
   init_db()
   app = web.Application()
@@ -672,6 +677,7 @@ async def main():
   
   logging.info(f"Сервер Koro Pay запущен...")
   await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
   asyncio.run(main())
