@@ -41,7 +41,7 @@ async def cmd_start(message: types.Message):
   )
   welcome_text = (
       "<b> Koro Pay — Международные переводы в СНГ</b>\n\n"
-      "Быстро, безопасно и по выгодному курсу в национальных валютах.\n\n"
+      "Быстро, безопасно и по выгодному курсу.\n\n"
       "<i>Нажмите кнопку ниже, чтобы открыть приложение.</i>"
   )
   await message.answer(
@@ -54,9 +54,9 @@ async def api_order_handler(request):
   try:
     data = await request.json()
     country = data.get("country", "СНГ")
-    local_amount = data.get("local_amount", "0")
+    rub_amount = data.get("rub_amount", "0")
+    local_received = data.get("local_received", "0")
     currency = data.get("currency", "VAL")
-    rub_total = data.get("rub_total", "0")
     recipient_name = data.get("recipient_name", "Не указано")
     recipient_card = data.get("recipient_card", "Не указано")
     user_name = data.get("username", "Аноним")
@@ -65,7 +65,6 @@ async def api_order_handler(request):
     user_info = f"@{user_name}" if user_name != "Аноним" else f"ID: {user_id}"
     tx_id = f"KP-{random.randint(100000, 999999)}"
 
-    # Кнопка для админа, чтобы подтвердить платеж
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -81,8 +80,8 @@ async def api_order_handler(request):
         f"🚨 <b>Новый перевод на проверку! [<code>{tx_id}</code>]</b>\n\n"
         f"👤 Клиент: {user_info} (ID: <code>{user_id}</code>)\n"
         f"🌍 Направление: <b>{country}</b>\n"
-        f"💶 Сумма: <b>{local_amount} {currency}</b>\n"
-        f"🇷🇺 Ожидается от клиента: <b>{rub_total} RUB</b>\n\n"
+        f"🇷🇺 Получено от клиента: <b>{rub_amount} RUB</b>\n"
+        f"💶 К выплате получателю: <b>{local_received} {currency}</b>\n\n"
         f"👤 Получатель: <b>{recipient_name}</b>\n"
         f"💳 Карта получателя: <code>{recipient_card}</code>\n\n"
         f"👉 Проверьте Озон Банк ({RECEIVE_CARD}). Если деньги поступили, нажмите кнопку ниже:"
@@ -101,7 +100,6 @@ async def api_order_handler(request):
     )
 
 
-# Обработка нажатия кнопки админом в Telegram
 @dp.callback_query(F.data.startswith("approve_"))
 async def process_approve(callback: types.CallbackQuery):
   parts = callback.data.split("_")
@@ -118,8 +116,8 @@ async def process_approve(callback: types.CallbackQuery):
     success_text = (
         f"🎉 <b>Ваш перевод успешно выполнен!</b>\n\n"
         f"🆔 Номер транзакции: <code>{tx_id}</code>\n"
-        f"✅ Средства отправлены получателю.\n\n"
-        f"Благодарим за использование <b>Koro Pay</b>! Пожалуйста, ожидайте зачисления средств."
+        f"✅ Средства успешно отправлены получателю.\n\n"
+        f"Благодарим за использование <b>Koro Pay</b>!"
     )
     await bot.send_message(target_user_id, success_text, parse_mode="HTML")
   except Exception as e:
@@ -212,26 +210,26 @@ async def webapp_handler(request):
             <!-- ЭКРАН 1: ВВОД ДАННЫХ -->
             <div id="screenForm" class="screen active">
                 <h2>Koro Pay</h2>
-                <div class="subtitle">Переводы в страны СНГ</div>
+                <div class="subtitle">Переводы в СНГ</div>
 
                 <div class="form-group">
                     <label for="country">Страна назначения</label>
-                    <select id="country" onchange="updateCurrency()">
-                        <option value="Uzbekistan|UZS|94">🇺🇿 Узбекистан (UZS)</option>
-                        <option value="Tajikistan|TJS|11.5">🇹🇯 Таджикистан (TJS)</option>
-                        <option value="Kyrgyzstan|KGS|1.1">🇰🇬 Киргизия (KGS)</option>
-                        <option value="Azerbaijan|AZN|57">🇦🇿 Азербайджан (AZN)</option>
+                    <select id="country" onchange="calculateLocal()">
+                        <option value="Uzbekistan|UZS|135">🇺🇿 Узбекистан (UZS)</option>
+                        <option value="Tajikistan|TJS|0.12">🇹🇯 Таджикистан (TJS)</option>
+                        <option value="Kyrgyzstan|KGS|0.95">🇰🇬 Киргизия (KGS)</option>
+                        <option value="Azerbaijan|AZN|0.018">🇦🇿 Азербайджан (AZN)</option>
                     </select>
                 </div>
 
                 <div class="form-group">
-                    <label for="amount">Сумма в валюте страны</label>
-                    <input type="number" id="amount" placeholder="Например: 500000" oninput="calculateRub()">
+                    <label for="amount">Сумма отправки (в рублях)</label>
+                    <input type="number" id="amount" placeholder="Макс. 25 000 ₽" oninput="calculateLocal()">
                 </div>
 
                 <div class="calc-box">
-                    <span>Итого к оплате:</span>
-                    <span class="calc-val" id="totalRub">0 ₽</span>
+                    <span>Получатель заберет:</span>
+                    <span class="calc-val" id="totalLocal">0 UZS</span>
                 </div>
 
                 <div class="form-group">
@@ -241,7 +239,7 @@ async def webapp_handler(request):
 
                 <div class="form-group">
                     <label for="recCard">Номер карты получателя</label>
-                    <input type="text" id="recCard" placeholder="9860 ... или 4000 ...">
+                    <input type="text" id="recCard" placeholder="Номер карты">
                 </div>
 
                 <button class="main-btn" onclick="submitForm()">Продолжить</button>
@@ -250,16 +248,16 @@ async def webapp_handler(request):
             <!-- ЭКРАН 2: ОПЛАТА ПО РЕКВИЗИТАМ -->
             <div id="screenPay" class="screen">
                 <h2>Оплата перевода</h2>
-                <div class="subtitle">Лимит: до 25 000 ₽</div>
+                <div class="subtitle">Перевод на карту</div>
 
                 <div class="req-box">
-                    <div style="font-size: 11px; color: var(--text-muted);">К ОПЛАТЕ В РУБЛЯХ:</div>
+                    <div style="font-size: 11px; color: var(--text-muted);">К ОПЛАТЕ:</div>
                     <div id="payRubSum" style="font-size: 20px; font-weight: bold; color: #c084fc; margin-top: 4px;">0 ₽</div>
                 </div>
 
                 <div class="req-box">
                     <div style="font-size: 11px; color: var(--text-muted);">РЕКВИЗИТЫ ({RECEIVE_BANK}):</div>
-                    <div id="cardText" style="font-size: 16px; font-weight: bold; margin-top: 4px; word-break: break-all;">{RECEIVE_CARD}</div>
+                    <div style="font-size: 16px; font-weight: bold; margin-top: 4px; word-break: break-all;">{RECEIVE_CARD}</div>
                     <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Получатель: <b>{RECEIVE_HOLDER}</b></div>
                     <button class="copy-btn" onclick="copyCard()">📋 Скопировать карту</button>
                 </div>
@@ -272,7 +270,7 @@ async def webapp_handler(request):
                 <div class="spinner">⏳</div>
                 <h3 style="margin: 0 0 8px 0;">Проверка платежа</h3>
                 <p style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
-                    Мы проверяем поступление средств на наш счет. Пожалуйста, не закрывайте приложение, скоро здесь появится статус транзакции.
+                    Мы проверяем поступление средств на наш счет. Пожалуйста, ожидайте, скоро здесь появится статус подтверждения.
                 </p>
             </div>
         </div>
@@ -281,22 +279,21 @@ async def webapp_handler(request):
             let tg = window.Telegram.WebApp;
             tg.expand();
 
-            let currentRate = 94;
+            let currentMultiplier = 135; // курс умножения рублей в валюту с учетом комиссии
             let currentCurr = 'UZS';
-            let calculatedRub = 0;
+            let enteredRub = 0;
+            let calculatedLocal = 0;
 
-            function updateCurrency() {{
+            function calculateLocal() {{
                 let val = document.getElementById('country').value.split('|');
                 currentCurr = val[1];
-                currentRate = parseFloat(val[2]);
-                calculateRub();
-            }}
+                currentMultiplier = parseFloat(val[2]);
 
-            function calculateRub() {{
-                let amt = parseFloat(document.getElementById('amount').value) || 0;
-                // Расчет рублей по курсу + небольшая комиссия
-                calculatedRub = Math.round(amt / currentRate * 1.05); 
-                document.getElementById('totalRub').textContent = amt > 0 ? calculatedRub.toLocaleString('ru-RU') + ' ₽' : '0 ₽';
+                enteredRub = parseFloat(document.getElementById('amount').value) || 0;
+                // Конвертация рублей в местную валюту с вычетом небольшой комиссии
+                calculatedLocal = Math.round(enteredRub * currentMultiplier);
+                
+                document.getElementById('totalLocal').textContent = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU') + ' ' + currentCurr : '0 ' + currentCurr;
             }}
 
             function copyCard() {{
@@ -307,15 +304,15 @@ async def webapp_handler(request):
             }}
 
             async function submitForm() {{
-                let amt = parseFloat(document.getElementById('amount').value) || 0;
+                enteredRub = parseFloat(document.getElementById('amount').value) || 0;
                 let name = document.getElementById('recName').value.trim();
                 let card = document.getElementById('recCard').value.trim();
 
-                if (amt <= 0) {{
-                    alert('Введите корректную сумму!');
+                if (enteredRub <= 0) {{
+                    alert('Введите сумму перевода в рублях!');
                     return;
                 }}
-                if (calculatedRub > 25000) {{
+                if (enteredRub > 25000) {{
                     alert('Максимальная сумма отправки составляет 25 000 рублей!');
                     return;
                 }}
@@ -324,7 +321,7 @@ async def webapp_handler(request):
                     return;
                 }}
 
-                document.getElementById('payRubSum').textContent = calculatedRub.toLocaleString('ru-RU') + ' ₽';
+                document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 
                 document.getElementById('screenForm').classList.remove('active');
                 document.getElementById('screenPay').classList.add('active');
@@ -333,7 +330,6 @@ async def webapp_handler(request):
             async function confirmPayment() {{
                 let countrySelect = document.getElementById('country');
                 let countryName = countrySelect.options[countrySelect.selectedIndex].text;
-                let amt = document.getElementById('amount').value;
                 let name = document.getElementById('recName').value;
                 let card = document.getElementById('recCard').value;
 
@@ -348,16 +344,15 @@ async def webapp_handler(request):
                         headers: {{ 'Content-Type': 'application/json' }},
                         body: JSON.stringify({{
                             country: countryName,
-                            local_amount: amt,
+                            rub_amount: enteredRub + ' ₽',
+                            local_received: calculatedLocal.toLocaleString('ru-RU'),
                             currency: currentCurr,
-                            rub_total: calculatedRub + ' ₽',
                             recipient_name: name,
                             recipient_card: card,
                             username: user.username || 'Аноним',
                             user_id: user.id || 0
                         }})
                     }});
-                    // Ожидание подтверждения от бота происходит через вебсокет/опрос или бота
                 }} catch (e) {{
                     alert('Ошибка связи с сервером.');
                 }}
