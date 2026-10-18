@@ -13,17 +13,16 @@ ADMIN_CHAT_ID = 6084347801
 WEBAPP_URL = "https://koropay-en5x.onrender.com"
 # ===================
 
-# Твои реквизиты для приема рублей от клиента (можешь изменить в любой момент)
-RECEIVE_CARD = "2202 2010 4455 6677"
-RECEIVE_HOLDER = "Мирелем И. (Koro Pay)"
-RECEIVE_BANK = "Т-Банк / Сбер (по СБП)"
+# Твои реквизиты Озон Банка
+RECEIVE_CARD = "2200 3204 4647 4787"
+RECEIVE_BANK = "Озон Банк"
+RECEIVE_HOLDER = "Mirelem Ismailzade"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 
-# Старт бота
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
   web_app_kb = InlineKeyboardMarkup(
@@ -47,7 +46,6 @@ async def cmd_start(message: types.Message):
   )
 
 
-# API-обработчик: фиксирует заявку и шлет отчет админу
 async def api_order_handler(request):
   try:
     data = await request.json()
@@ -68,7 +66,7 @@ async def api_order_handler(request):
         f"💶 Сумма отправки: <b>{amount} {currency}</b>\n"
         f"🇷🇺 К получению от клиента: <b>{rub_total}</b>\n"
         f"📍 Реквизиты получателя: <code>{recipient_info}</code>\n\n"
-        f"👉 Ожидайте поступления средств на ваши реквизиты."
+        f"👉 Ожидайте поступления средств на ваш Озон Банк."
     )
 
     if ADMIN_CHAT_ID:
@@ -82,7 +80,6 @@ async def api_order_handler(request):
     )
 
 
-# Веб-интерфейс необанка для переводов
 async def webapp_handler(request):
   html_content = f"""
     <!DOCTYPE html>
@@ -153,7 +150,7 @@ async def webapp_handler(request):
                 border-radius: 6px;
                 display: inline-block;
                 margin-top: 2px;
-            }
+            }}
             .operations-box {{
                 background: var(--card-bg);
                 backdrop-filter: blur(12px);
@@ -232,7 +229,6 @@ async def webapp_handler(request):
             button.pay-btn:active {{
                 transform: scale(0.97);
             }}
-            /* Экран с реквизитами */
             .requisites-screen {{
                 display: none;
                 background: var(--card-bg);
@@ -255,10 +251,27 @@ async def webapp_handler(request):
                 text-transform: uppercase;
             }}
             .req-val {{
-                font-size: 18px;
+                font-size: 16px;
                 font-weight: bold;
                 color: #fff;
                 margin-top: 4px;
+                word-break: break-all;
+            }}
+            .copy-btn {{
+                background: rgba(139, 92, 246, 0.2);
+                border: 1px solid var(--accent-purple);
+                color: #c084fc;
+                padding: 8px 12px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: bold;
+                cursor: pointer;
+                margin-top: 8px;
+                width: 100%;
+                transition: background 0.2s;
+            }}
+            .copy-btn:active {{
+                background: rgba(139, 92, 246, 0.4);
             }}
         </style>
     </head>
@@ -314,27 +327,27 @@ async def webapp_handler(request):
                         <span class="calc-value" id="totalRub">0 ₽</span>
                     </div>
 
-                    <button class="pay-btn" onclick="submitTransfer()">Получить реквизиты для оплаты</button>
+                    <button class="pay-btn" onclick="submitTransfer()">Перейти к оплате</button>
                 </div>
             </div>
 
-            <!-- Экран выдачи реквизитов клиенту -->
             <div id="requisitesScreen" class="requisites-screen">
-                <div style="font-size: 36px; margin-bottom: 10px;">⏳</div>
+                <div style="font-size: 36px; margin-bottom: 10px;">💳</div>
                 <h3 style="margin: 0 0 8px 0; font-size: 20px;">Заявка создана!</h3>
                 <p style="color: var(--text-muted); font-size: 13px; line-height: 1.4; margin-bottom: 16px;">
-                    Для завершения перевода переведите точную сумму на наши реквизиты в РФ. После поступления средств мы отправим деньги получателю.
+                    Переведите точную сумму на карту Озон Банка. После подтверждения средства будут отправлены за рубеж.
                 </p>
 
                 <div class="req-box">
                     <div class="req-label">Сумма к оплате:</div>
-                    <div class="req-val" id="finalPaySum" style="color: #c084fc;">0 ₽</div>
+                    <div class="req-val" id="finalPaySum" style="color: #c084fc; font-size: 18px;">0 ₽</div>
                 </div>
 
                 <div class="req-box">
-                    <div class="req-label">Номер карты / СБП для оплаты:</div>
-                    <div class="req-val">{RECEIVE_CARD}</div>
-                    <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">{RECEIVE_BANK} ({RECEIVE_HOLDER})</div>
+                    <div class="req-label">Реквизиты ({RECEIVE_BANK}):</div>
+                    <div class="req-val" id="cardNumText">{RECEIVE_CARD}</div>
+                    <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Получатель: <b>{RECEIVE_HOLDER}</b></div>
+                    <button class="copy-btn" onclick="copyCardNumber()">📋 Скопировать номер карты</button>
                 </div>
 
                 <button class="pay-btn" onclick="tg.close()" style="margin-top: 10px;">Готово, я оплатил(а)</button>
@@ -361,8 +374,19 @@ async def webapp_handler(request):
                 let amount = parseFloat(document.getElementById('amount').value) || 0;
                 let currency = document.getElementById('currency').value;
                 let rate = rates[currency] || 95;
-                let total = Math.round(amount * rate * 1.05); // Комиссия сервиса 5%
+                let total = Math.round(amount * rate * 1.05);
                 document.getElementById('totalRub').textContent = amount > 0 ? total.toLocaleString('ru-RU') + ' ₽' : '0 ₽';
+            }}
+
+            function copyCardNumber() {{
+                let cardText = "{RECEIVE_CARD}".replace(/\\s+/g, '');
+                navigator.clipboard.writeText(cardText).then(() => {{
+                    let btn = document.querySelector('.copy-btn');
+                    btn.textContent = '✅ Скопировано в буфер!';
+                    setTimeout(() => {{
+                        btn.textContent = '📋 Скопировать номер карты';
+                    }}, 2000);
+                }});
             }}
 
             async function submitTransfer() {{
@@ -383,7 +407,7 @@ async def webapp_handler(request):
 
                 let btn = document.querySelector('.pay-btn');
                 btn.disabled = true;
-                btn.textContent = 'Генерация реквизитов...';
+                btn.textContent = 'Генерация счета...';
 
                 try {{
                     let response = await fetch('/api/order', {{
@@ -407,12 +431,12 @@ async def webapp_handler(request):
                     }} else {{
                         alert('Ошибка создания перевода. Повторите попытку.');
                         btn.disabled = false;
-                        btn.textContent = 'Получить реквизиты для оплаты';
+                        btn.textContent = 'Перейти к оплате';
                     }}
                 }} catch (err) {{
                     alert('Ошибка соединения с сервером.');
                     btn.disabled = false;
-                    btn.textContent = 'Получить реквизиты для оплаты';
+                    btn.textContent = 'Перейти к оплате';
                 }}
             }}
         </script>
