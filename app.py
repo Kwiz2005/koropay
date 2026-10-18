@@ -6,11 +6,11 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiohttp import web
 
-# === ТВОИ ДАННЫЕ УЖЕ ВСТРОЕНЫ ===
+# === ТВОИ ДАННЫЕ ===
 TOKEN = "8639644231:AAF2-UwFK-lxtaqqwHOi6zPf8pcQ8xe5vGY"
 ADMIN_CHAT_ID = 6084347801
 WEBAPP_URL = "https://koropay-en5x.onrender.com"
-# ==================================
+# ===================
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -56,7 +56,7 @@ async def handle_webapp_data(message: types.Message):
           ADMIN_CHAT_ID,
           f"🚨 <b>Новая заявка из Web App!</b>\n\n"
           f"👤 Клиент: {user_info}\n"
-          f"📦 Данные формы: <code>{data}</code>\n\n"
+          f"📦 Данные заявки:\n<code>{data}</code>\n\n"
           f"👉 Проверьте данные и подготовьте расчет суммы в рублях.",
           parse_mode="HTML",
       )
@@ -64,14 +64,14 @@ async def handle_webapp_data(message: types.Message):
       logging.error(f"Ошибка отправки админу: {e}")
 
   await message.answer(
-      "✅ <b>Заявка успешно отправлена!</b>\n\n"
-      "Мы получили параметры вашего платежа. Менеджер свяжется с вами для согласования расчета.\n\n"
+      "✅ <b>Заявка успешно принята в обработку!</b>\n\n"
+      "Мы получили параметры вашего платежа. Менеджер свяжется с вами в ближайшее время для согласования расчета.\n\n"
       "Благодарим за обращение в Koro Pay.",
       parse_mode="HTML",
   )
 
 
-# Веб-сервер для отдачи интерфейса
+# Веб-сервер с премиальным дизайном под стиль аватара
 async def webapp_handler(request):
   html_content = """
     <!DOCTYPE html>
@@ -79,47 +79,167 @@ async def webapp_handler(request):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Koro Pay Web App</title>
+        <title>Koro Pay — Международные платежи</title>
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <style>
+            :root {
+                --bg-color: #0b0c10;
+                --card-bg: #151720;
+                --accent: #8b5cf6;
+                --accent-hover: #7c3aed;
+                --text-main: #ffffff;
+                --text-muted: #9ca3af;
+                --border: #232634;
+                --input-bg: #0e1017;
+            }
             body {
-                background-color: #0f1016; color: #ffffff;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh;
+                background-color: var(--bg-color);
+                color: var(--text-main);
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+                margin: 0;
+                padding: 16px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                min-height: 100vh;
+                box-sizing: border-box;
             }
             .container {
-                width: 100%; max-width: 400px; background: #1a1c24; padding: 24px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); box-sizing: border-box;
+                width: 100%;
+                max-width: 400px;
+                background: var(--card-bg);
+                padding: 24px;
+                border-radius: 20px;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+                border: 1px solid var(--border);
+                box-sizing: border-box;
+                margin-top: auto;
+                margin-bottom: auto;
             }
-            h2 { margin-top: 0; font-size: 22px; text-align: center; color: #a855f7; }
-            p { font-size: 14px; color: #9ca3af; text-align: center; margin-bottom: 20px; }
-            label { font-size: 13px; color: #d1d5db; display: block; margin-bottom: 6px; }
-            input, textarea {
-                width: 100%; padding: 12px; background: #111319; border: 1px solid #374151; border-radius: 8px; color: #fff; font-size: 15px; margin-bottom: 16px; box-sizing: border-box;
+            .logo-container {
+                text-align: center;
+                margin-bottom: 20px;
             }
-            input:focus, textarea:focus { border-color: #a855f7; outline: none; }
+            .logo-badge {
+                display: inline-block;
+                width: 50px;
+                height: 50px;
+                background: linear-gradient(135deg, #a855f7, #6366f1);
+                border-radius: 14px;
+                line-height: 50px;
+                font-size: 24px;
+                font-weight: bold;
+                color: white;
+                box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+                margin-bottom: 10px;
+            }
+            h2 {
+                margin: 0 0 6px 0;
+                font-size: 20px;
+                text-align: center;
+                letter-spacing: 0.5px;
+            }
+            p.subtitle {
+                font-size: 13px;
+                color: var(--text-muted);
+                text-align: center;
+                margin: 0 0 20px 0;
+            }
+            .form-group {
+                margin-bottom: 16px;
+            }
+            label {
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--text-muted);
+                display: block;
+                margin-bottom: 6px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+            input, textarea, select {
+                width: 100%;
+                padding: 12px 14px;
+                background: var(--input-bg);
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                color: var(--text-main);
+                font-size: 15px;
+                box-sizing: border-box;
+                transition: border-color 0.2s;
+            }
+            input:focus, textarea:focus, select:focus {
+                border-color: var(--accent);
+                outline: none;
+            }
             button {
-                width: 100%; padding: 14px; background: linear-gradient(135deg, #9333ea, #7e22ce); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer;
+                width: 100%;
+                padding: 14px;
+                background: linear-gradient(135deg, #9333ea, #6366f1);
+                color: white;
+                border: none;
+                border-radius: 12px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                box-shadow: 0 4px 15px rgba(147, 51, 234, 0.4);
+                transition: opacity 0.2s, transform 0.1s;
+                margin-top: 10px;
+            }
+            button:active {
+                transform: scale(0.98);
             }
         </style>
     </head>
     <body>
         <div class="container">
-            <h2>Koro Pay</h2>
-            <p>Укажите данные для проведения платежа</p>
-            <label for="service">Сервис или назначение платежа:</label>
-            <input type="text" id="service" placeholder="Например: ChatGPT Plus, 20$">
-            <label for="amount">Сумма в валюте / детали:</label>
-            <textarea id="amount" rows="3" placeholder="Укажите точную сумму или прикрепите ссылку на инвойс"></textarea>
+            <div class="logo-container">
+                <div class="logo-badge">K</div>
+                <h2>Koro Pay</h2>
+                <p class="subtitle">Безопасная оплата зарубежных сервисов</p>
+            </div>
+            
+            <div class="form-group">
+                <label for="service">Сервис или назначение платежа</label>
+                <input type="text" id="service" placeholder="Например: ChatGPT Plus, Hosting, инвойс">
+            </div>
+
+            <div class="form-group">
+                <label for="amount">Сумма и валюта</label>
+                <input type="text" id="amount" placeholder="Например: 20 USD или 50 EUR">
+            </div>
+
+            <div class="form-group">
+                <label for="details">Комментарий / Ссылка на оплату</label>
+                <textarea id="details" rows="2" placeholder="Вставьте ссылку на инвойс или детали заказа"></textarea>
+            </div>
+
             <button id="submitBtn">Отправить заявку</button>
         </div>
+
         <script>
             let tg = window.Telegram.WebApp;
             tg.expand();
+
             document.getElementById('submitBtn').addEventListener('click', function() {
-                let service = document.getElementById('service').value;
-                let details = document.getElementById('amount').value;
-                if (!service) { alert('Пожалуйста, укажите сервис!'); return; }
-                tg.sendData(`Сервис: ${service} | Детали: ${details}`);
+                let service = document.getElementById('service').value.trim();
+                let amount = document.getElementById('amount').value.trim();
+                let details = document.getElementById('details').value.trim();
+
+                if (!service) {
+                    alert('Пожалуйста, укажите сервис!');
+                    return;
+                }
+                if (!amount) {
+                    alert('Пожалуйста, укажите сумму!');
+                    return;
+                }
+
+                let payload = `Сервис: ${service} | Сумма: ${amount} | Детали: ${details || 'нет'}`;
+                
+                // Отправляем данные боту и закрываем веб-апп
+                tg.sendData(payload);
+                tg.close();
             });
         </script>
     </body>
