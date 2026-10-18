@@ -22,7 +22,7 @@ from aiogram.types import (
 from aiohttp import web
 
 # === ТВОИ ДАННЫЕ ===
-TOKEN = "8639644231:AAF2-UwFK-lxtaqqwHOi6zPf8pcQ8xe5vGY"
+TOKEN = "8639644231:AAGNysKoCaTQyqg0pvPEXUxgOH5nJgG-pAk"
 ADMIN_CHAT_ID = 6084347801
 WEBAPP_URL = "https://koropay-en5x.onrender.com"
 # ===================
