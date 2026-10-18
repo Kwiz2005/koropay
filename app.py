@@ -324,7 +324,7 @@ async def process_reject(callback: types.CallbackQuery):
     await callback.answer("Заявка отклонена, клиент уведомлен.")
 
 async def webapp_handler(request):
-  html_content = f"""
+  html_content = """
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -334,72 +334,72 @@ async def webapp_handler(request):
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
-            :root {{
+            :root {
                 --bg: #05050C; --surface: #121322; --surface-hover: #1C1D33;
                 --primary: #9667E0; --primary-light: #7C83FD;
                 --primary-grad: linear-gradient(135deg, #7C83FD 0%, #9667E0 100%);
                 --text: #FFFFFF; --text-sec: #8A8E9E; --border: rgba(124, 131, 253, 0.15);
                 --success: #30D158; --danger: #FF453A; --warning: #FF9F0A;
-            }}
-            * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
-            body {{ background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }}
-            .header {{ padding: 20px 20px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); }}
-            .logo-container {{ display: flex; align-items: center; gap: 12px; }}
-            .logo-img {{ width: 42px; height: 42px; border-radius: 10px; object-fit: cover; background: var(--surface); }}
-            .header-title {{ font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }}
-            .header-title span {{ color: var(--primary); }}
-            .tagline {{ font-size: 11px; color: var(--text-sec); letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }}
+            }
+            * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+            body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+            .header { padding: 20px 20px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); background: var(--bg); }
+            .logo-container { display: flex; align-items: center; gap: 12px; }
+            .logo-img { width: 42px; height: 42px; border-radius: 10px; object-fit: cover; background: var(--surface); }
+            .header-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
+            .header-title span { color: var(--primary); }
+            .tagline { font-size: 11px; color: var(--text-sec); letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }
             
-            .content {{ flex: 1; overflow-y: auto; padding: 15px 20px 80px; }}
-            .screen {{ display: none; animation: fadeIn 0.3s ease; }}
-            .screen.active {{ display: block; }}
-            @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+            .content { flex: 1; overflow-y: auto; padding: 15px 20px 80px; }
+            .screen { display: none; animation: fadeIn 0.3s ease; }
+            .screen.active { display: block; }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-            .card-panel {{ background: var(--surface); border-radius: 16px; padding: 18px; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }}
-            .input-group {{ margin-bottom: 16px; }}
-            .input-group:last-child {{ margin-bottom: 0; }}
-            label {{ display: block; font-size: 11px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }}
+            .card-panel { background: var(--surface); border-radius: 16px; padding: 18px; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+            .input-group { margin-bottom: 16px; }
+            .input-group:last-child { margin-bottom: 0; }
+            label { display: block; font-size: 11px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
             
-            input, select {{ width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }}
-            input:focus, select:focus {{ border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }}
+            input, select { width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }
+            input:focus, select:focus { border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }
             
-            .quick-amounts {{ display: flex; gap: 8px; margin-top: 10px; }}
-            .quick-btn {{ flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }}
-            .quick-btn:active {{ background: var(--primary); color: #fff; }}
+            .quick-amounts { display: flex; gap: 8px; margin-top: 10px; }
+            .quick-btn { flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+            .quick-btn:active { background: var(--primary); color: #fff; }
             
-            .receipt-row {{ display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 10px; color: var(--text-sec); }}
-            .receipt-row.total {{ font-size: 18px; font-weight: 800; color: var(--text); margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); margin-bottom: 0; }}
+            .receipt-row { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 10px; color: var(--text-sec); }
+            .receipt-row.total { font-size: 18px; font-weight: 800; color: var(--text); margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); margin-bottom: 0; }
             
-            .btn-primary {{ width: 100%; padding: 16px; background: var(--primary-grad); color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s; }}
-            .btn-primary:active {{ opacity: 0.8; }}
-            .btn-copy {{ background: var(--surface-hover); color: var(--primary-light); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }}
+            .btn-primary { width: 100%; padding: 16px; background: var(--primary-grad); color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s; }
+            .btn-primary:active { opacity: 0.8; }
+            .btn-copy { background: var(--surface-hover); color: var(--primary-light); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }
 
-            .checkbox-wrapper {{ display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }}
-            .checkbox-wrapper input {{ width: 22px; height: 22px; accent-color: var(--primary); }}
-            .link {{ color: var(--primary-light); text-decoration: none; font-weight: 600; cursor: pointer; }}
+            .checkbox-wrapper { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }
+            .checkbox-wrapper input { width: 22px; height: 22px; accent-color: var(--primary); }
+            .link { color: var(--primary-light); text-decoration: none; font-weight: 600; cursor: pointer; }
             
-            .bottom-nav {{ position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(5, 5, 12, 0.9); backdrop-filter: blur(10px); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }}
-            .nav-item {{ display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; }}
-            .nav-item.active {{ color: var(--primary-light); }}
-            .nav-icon {{ font-size: 22px; margin-bottom: 4px; }}
+            .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(5, 5, 12, 0.9); backdrop-filter: blur(10px); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }
+            .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; }
+            .nav-item.active { color: var(--primary-light); }
+            .nav-icon { font-size: 22px; margin-bottom: 4px; }
             
-            .history-card {{ display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }}
-            .history-card:last-child {{ border-bottom: none; padding-bottom: 0; }}
-            .h-left .h-title {{ font-size: 15px; font-weight: 600; margin-bottom: 4px; color: var(--text); }}
-            .h-left .h-desc {{ font-size: 12px; color: var(--text-sec); }}
-            .h-right {{ text-align: right; }}
-            .h-right .h-amount {{ font-size: 15px; font-weight: 700; margin-bottom: 4px; color: var(--text); }}
-            .badge {{ font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 6px; display: inline-block; text-transform: uppercase; }}
-            .b-pending {{ background: rgba(255, 159, 10, 0.15); color: var(--warning); }}
-            .b-success {{ background: rgba(48, 209, 88, 0.15); color: var(--success); }}
-            .b-reject {{ background: rgba(255, 69, 58, 0.15); color: var(--danger); }}
+            .history-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+            .history-card:last-child { border-bottom: none; padding-bottom: 0; }
+            .h-left .h-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+            .h-left .h-desc { font-size: 12px; color: var(--text-sec); }
+            .h-right { text-align: right; }
+            .h-right .h-amount { font-size: 15px; font-weight: 700; margin-bottom: 4px; color: var(--text); }
+            .badge { font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 6px; display: inline-block; text-transform: uppercase; }
+            .b-pending { background: rgba(255, 159, 10, 0.15); color: var(--warning); }
+            .b-success { background: rgba(48, 209, 88, 0.15); color: var(--success); }
+            .b-reject { background: rgba(255, 69, 58, 0.15); color: var(--danger); }
 
-            .modal {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: flex-end; }}
-            .modal-content {{ background: var(--surface); width: 100%; border-radius: 24px 24px 0 0; padding: 24px; max-height: 85vh; overflow-y: auto; animation: slideUp 0.3s; border-top: 1px solid var(--border); }}
-            @keyframes slideUp {{ from {{ transform: translateY(100%); }} to {{ transform: translateY(0); }} }}
-            .modal-close {{ width: 40px; height: 5px; background: var(--border); border-radius: 3px; margin: 0 auto 20px; }}
-            .legal-text h3 {{ margin-top: 0; font-size: 20px; font-weight: 800; }}
-            .legal-text p {{ font-size: 13px; color: var(--text-sec); line-height: 1.6; margin-bottom: 12px; }}
+            .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: flex-end; }
+            .modal-content { background: var(--surface); width: 100%; border-radius: 24px 24px 0 0; padding: 24px; max-height: 85vh; overflow-y: auto; animation: slideUp 0.3s; border-top: 1px solid var(--border); }
+            @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+            .modal-close { width: 40px; height: 5px; background: var(--border); border-radius: 3px; margin: 0 auto 20px; }
+            .legal-text h3 { margin-top: 0; font-size: 20px; font-weight: 800; }
+            .legal-text p { font-size: 13px; color: var(--text-sec); line-height: 1.6; margin-bottom: 12px; }
         </style>
     </head>
     <body>
@@ -419,10 +419,10 @@ async def webapp_handler(request):
                     <div class="input-group">
                         <label>Страна зачисления</label>
                         <select id="country" onchange="onCountryChange()">
-                            <option value="Uzbekistan|UZS|{EXCHANGE_RATES['UZS']}">🇺🇿 Узбекистан (UZS)</option>
-                            <option value="Tajikistan|TJS|{EXCHANGE_RATES['TJS']}">🇹🇯 Таджикистан (TJS)</option>
-                            <option value="Kyrgyzstan|KGS|{EXCHANGE_RATES['KGS']}">🇰🇬 Киргизия (KGS)</option>
-                            <option value="Azerbaijan|AZN|{EXCHANGE_RATES['AZN']}">🇦🇿 Азербайджан (AZN)</option>
+                            <option value="Uzbekistan|UZS|135.00">🇺🇿 Узбекистан (UZS)</option>
+                            <option value="Tajikistan|TJS|0.115">🇹🇯 Таджикистан (TJS)</option>
+                            <option value="Kyrgyzstan|KGS|0.95">🇰🇬 Киргизия (KGS)</option>
+                            <option value="Azerbaijan|AZN|0.018">🇦🇿 Азербайджан (AZN)</option>
                         </select>
                     </div>
                     <div class="input-group">
@@ -501,10 +501,10 @@ async def webapp_handler(request):
                 </div>
 
                 <div class="card-panel">
-                    <label>Реквизиты ({RECEIVE_BANK})</label>
-                    <div style="font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px;">{RECEIVE_CARD}</div>
-                    <div style="font-size: 14px; color: var(--text-sec); font-weight: 500;">{RECEIVE_HOLDER}</div>
-                    <button class="btn-copy" id="btnCopyCard" onclick="copyText('{RECEIVE_CARD}', 'btnCopyCard')">Скопировать номер карты</button>
+                    <label>Реквизиты (Озон Банк)</label>
+                    <div style="font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px;">2200 3204 4647 4787</div>
+                    <div style="font-size: 14px; color: var(--text-sec); font-weight: 500;">Mirelem Ismailzade</div>
+                    <button class="btn-copy" id="btnCopyCard" onclick="copyText('2200 3204 4647 4787', 'btnCopyCard')">Скопировать номер карты</button>
                 </div>
 
                 <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
