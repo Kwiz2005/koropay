@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 from aiohttp import web
 
-# === НОВЫЙ ТОКЕН БОТА ===
+# === ТОКЕН БОТА ===
 TOKEN = "8639644231:AAGNysKoCaTQyqg0pvPEXUxgOH5nJgG-pAk"
 ADMIN_CHAT_ID = 6084347801
 WEBAPP_URL = "https://koropay-en5x.onrender.com"
@@ -428,7 +428,10 @@ async def webapp_handler(request):
                     <div class="input-group">
                         <label>Банк получателя</label>
                         <select id="recipientBank">
-                            <!-- Динамически заполняется скриптом -->
+                            <option value="UzCard / Humo">UzCard / Humo (Любой банк)</option>
+                            <option value="KapitalBank">KapitalBank</option>
+                            <option value="Tenge Bank">Tenge Bank</option>
+                            <option value="Ipoteka Bank">Ipoteka Bank</option>
                         </select>
                     </div>
                     <div class="input-group">
@@ -575,136 +578,139 @@ async def webapp_handler(request):
             tg.expand();
             tg.ready();
 
-            const banksData = {{
+            const banksData = {
                 "Uzbekistan": ["UzCard / Humo (Любой банк)", "KapitalBank", "Tenge Bank", "Ipoteka Bank", "AloqaBank", "AgroBank"],
                 "Tajikistan": ["Alif Bank", "Spitamen Bank", "Eskhata Bank", "Cori Standard", "Dushanbe City"],
                 "Kyrgyzstan": ["Optima Bank", "MBank (МБанк)", "Demir Bank", "RSK Bank", "Bai-Tushum"],
                 "Azerbaijan": ["Kapital Bank", "Leobank", "ABB (Международный банк)", "Unibank", "Pasha Bank"]
-            }};
+            };
 
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
 
-            window.onload = function() {{ 
+            window.onload = function() { 
                 updateBanks();
                 calculateParams(); 
-            }};
+            };
 
-            function haptic() {{ if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); }}
+            function haptic() { if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); }
 
-            function switchTab(tabId, el) {{
+            function switchTab(tabId, el) {
                 haptic();
                 document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
                 document.getElementById(tabId).classList.add('active');
-                if(el) {{
+                if(el) {
                     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
                     el.classList.add('active');
-                }}
-            }}
+                }
+            }
 
-            function openModal(id) {{ haptic(); document.getElementById(id).style.display = 'flex'; }}
-            function closeModal(id) {{ haptic(); document.getElementById(id).style.display = 'none'; }}
+            function openModal(id) { haptic(); document.getElementById(id).style.display = 'flex'; }
+            function closeModal(id) { haptic(); document.getElementById(id).style.display = 'none'; }
 
-            function formatCard(input) {{
-                let val = input.value.replace(/\\D/g, '');
-                input.value = val.match(/.{{1,4}}/g)?.join(' ') || '';
-            }}
+            function formatCard(input) {
+                let val = input.value.replace(/\D/g, '');
+                input.value = val.match(/.{1,4}/g)?.join(' ') || '';
+            }
 
-            function setAmount(val) {{ haptic(); document.getElementById('amount').value = val; calculateParams(); }}
+            function setAmount(val) { haptic(); document.getElementById('amount').value = val; calculateParams(); }
 
-            function onCountryChange() {{
+            function onCountryChange() {
                 updateBanks();
                 calculateParams();
-            }}
+            }
 
-            function updateBanks() {{
-                let countryVal = document.getElementById('country').value.split('|')[0];
+            function updateBanks() {
+                let countrySelectVal = document.getElementById('country').value;
+                let countryKey = countrySelectVal.split('|')[0];
                 let bankSelect = document.getElementById('recipientBank');
+                
+                if (!bankSelect) return;
                 bankSelect.innerHTML = '';
                 
-                let availableBanks = banksData[countryVal] || ["Стандартный банк"];
-                availableBanks.forEach(bank => {{
+                let availableBanks = banksData[countryKey] || ["Стандартный банк"];
+                availableBanks.forEach(bank => {
                     let opt = document.createElement('option');
                     opt.value = bank;
                     opt.textContent = bank;
                     bankSelect.appendChild(opt);
-                }});
-            }}
+                });
+            }
 
-            function calculateParams() {{
+            function calculateParams() {
                 let val = document.getElementById('country').value.split('|');
                 currentCurr = val[1]; currentMultiplier = parseFloat(val[2]);
                 
-                document.getElementById('rateDisplay').textContent = `1 ₽ = ${{currentMultiplier.toFixed(2)}} ${{currentCurr}}`;
+                document.getElementById('rateDisplay').textContent = `1 ₽ = ${currentMultiplier.toFixed(2)} ${currentCurr}`;
                 
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
                 calculatedLocal = enteredRub * currentMultiplier;
                 
-                let displayVal = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) : '0.00';
+                let displayVal = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '0.00';
                 document.getElementById('totalLocal').textContent = displayVal + ' ' + currentCurr;
-            }}
+            }
 
-            function copyText(text, btnId) {{
+            function copyText(text, btnId) {
                 haptic();
-                navigator.clipboard.writeText(text.replace(/\\s+/g, ''));
+                navigator.clipboard.writeText(text.replace(/\s+/g, ''));
                 let btn = document.getElementById(btnId);
                 let origText = btn.textContent;
                 btn.textContent = '✅ Скопировано!';
-                setTimeout(() => {{ btn.textContent = origText; }}, 2000);
-            }}
+                setTimeout(() => { btn.textContent = origText; }, 2000);
+            }
 
-            async function loadHistory() {{
+            async function loadHistory() {
                 let user_id = tg.initDataUnsafe?.user?.id || 0;
                 let container = document.getElementById('historyContainer');
-                try {{
+                try {
                     let response = await fetch('/api/history?user_id=' + user_id);
                     let res = await response.json();
                     
-                    if(res.data.length === 0) {{
+                    if(res.data.length === 0) {
                         container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--text-sec); font-weight: 500;">У вас пока нет операций</div>';
                         return;
-                    }}
+                    }
 
                     container.innerHTML = '';
-                    res.data.forEach(tx => {{
+                    res.data.forEach(tx => {
                         let bClass = tx.status === 'SUCCESS' ? 'b-success' : (tx.status === 'REJECTED' ? 'b-reject' : 'b-pending');
                         let bText = tx.status === 'SUCCESS' ? 'Успешно' : (tx.status === 'REJECTED' ? 'Отклонено' : 'В обработке');
                         
                         container.innerHTML += `
                             <div class="history-card">
                                 <div class="h-left">
-                                    <div class="h-title">${{tx.country}}</div>
-                                    <div class="h-desc">Код: ${{tx.tx_id}}</div>
+                                    <div class="h-title">${tx.country}</div>
+                                    <div class="h-desc">Код: ${tx.tx_id}</div>
                                 </div>
                                 <div class="h-right">
-                                    <div class="h-amount">${{tx.rub}} ₽</div>
-                                    <div class="badge ${{bClass}}">${{bText}}</div>
+                                    <div class="h-amount">${tx.rub} ₽</div>
+                                    <div class="badge ${bClass}">${bText}</div>
                                 </div>
                             </div>
                         `;
-                    }});
-                }} catch(e) {{ container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>'; }}
-            }}
+                    });
+                } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>'; }
+            }
 
-            function startTimer(duration) {{
+            function startTimer(duration) {
                 let timer = duration, minutes, seconds;
                 clearInterval(timerInterval);
-                timerInterval = setInterval(function () {{
+                timerInterval = setInterval(function () {
                     minutes = parseInt(timer / 60, 10); seconds = parseInt(timer % 60, 10);
                     minutes = minutes < 10 ? "0" + minutes : minutes; seconds = seconds < 10 ? "0" + seconds : seconds;
                     document.getElementById('timerDisplay').textContent = minutes + ":" + seconds;
-                    if (--timer < 0) {{ clearInterval(timerInterval); alert('Время сессии истекло.'); location.reload(); }}
-                }}, 1000);
-            }}
+                    if (--timer < 0) { clearInterval(timerInterval); alert('Время сессии истекло.'); location.reload(); }
+                }, 1000);
+            }
 
-            async function initiateTransfer() {{
+            async function initiateTransfer() {
                 haptic();
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
-                let card = document.getElementById('recCard').value.replace(/\\s+/g, '');
+                let card = document.getElementById('recCard').value.replace(/\s+/g, '');
                 
-                if (enteredRub <= 0 || enteredRub > 25000) {{ tg.showAlert('Лимит перевода от 1 до 25 000 ₽'); return; }}
-                if (card.length < 12) {{ tg.showAlert('Проверьте номер карты или счета получателя'); return; }}
-                if (!document.getElementById('recName').value) {{ tg.showAlert('Укажите ФИО получателя'); return; }}
-                if (!document.getElementById('termsCheck').checked) {{ tg.showAlert('Необходимо согласиться с Офертой'); return; }}
+                if (enteredRub <= 0 || enteredRub > 25000) { tg.showAlert('Лимит перевода от 1 до 25 000 ₽'); return; }
+                if (card.length < 12) { tg.showAlert('Проверьте номер карты или счета получателя'); return; }
+                if (!document.getElementById('recName').value) { tg.showAlert('Укажите ФИО получателя'); return; }
+                if (!document.getElementById('termsCheck').checked) { tg.showAlert('Необходимо согласиться с Офертой'); return; }
 
                 currentOrderCode = 'KORO-' + Math.floor(1000 + Math.random() * 9000);
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
@@ -713,16 +719,16 @@ async def webapp_handler(request):
                 document.getElementById('bottomNav').style.display = 'none';
                 switchTab('tab-payment', null);
                 startTimer(900);
-            }}
+            }
 
-            async function confirmPayment() {{
+            async function confirmPayment() {
                 haptic();
-                let user = tg.initDataUnsafe?.user || {{}};
+                let user = tg.initDataUnsafe?.user || {};
                 clearInterval(timerInterval);
-                try {{
-                    let response = await fetch('/api/order', {{
-                        method: 'POST', headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{
+                try {
+                    let response = await fetch('/api/order', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
                             country: document.getElementById('country').value.split('|')[0],
                             recipient_bank: document.getElementById('recipientBank').value,
                             rub_amount: enteredRub + ' ₽',
@@ -732,14 +738,14 @@ async def webapp_handler(request):
                             recipient_card: document.getElementById('recCard').value,
                             transfer_comment: currentOrderCode,
                             username: user.username || 'Аноним', user_id: user.id || 0
-                        }})
-                    }};
+                        })
+                    });
                     let result = await response.json();
-                    if (!response.ok) {{ tg.showAlert(result.message || 'Ошибка сервера.'); location.reload(); return; }}
+                    if (!response.ok) { tg.showAlert(result.message || 'Ошибка сервера.'); location.reload(); return; }
                     
                     switchTab('tab-success', null);
-                }} catch (e) {{ tg.showAlert('Ошибка связи с сервером.'); }}
-            }}
+                } catch (e) { tg.showAlert('Ошибка связи с сервером.'); }
+            }
         </script>
     </body>
     </html>
@@ -760,7 +766,7 @@ async def main():
   
   asyncio.create_task(update_rates())
   
-  logging.info(f"Сервер Koro Pay запущен с новым токеном...")
+  logging.info(f"Сервер Koro Pay запущен...")
   await dp.start_polling(bot)
 
 
