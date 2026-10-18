@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import time
+import aiohttp
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -23,12 +24,45 @@ RECEIVE_CARD = "2200 3204 4647 4787"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
-# Словарь для антиспама
+# Базовые курсы (обновятся автоматически при старте сервера)
+EXCHANGE_RATES = {
+    "UZS": 135.00,
+    "TJS": 0.115,
+    "KGS": 0.95,
+    "AZN": 0.018
+}
+
+# Комиссия твоего сервиса. 0.95 означает, что ты удерживаешь 5% от официального курса.
+COMMISSION_MARGIN = 0.95 
 user_cooldowns = {}
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+
+# Фоновая задача для парсинга реальных курсов валют
+async def update_rates():
+    global EXCHANGE_RATES
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://open.er-api.com/v6/latest/RUB") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        rates = data.get("rates", {})
+                        if rates:
+                            # Умножаем официальный курс на маржу сервиса
+                            if "UZS" in rates: EXCHANGE_RATES["UZS"] = rates["UZS"] * COMMISSION_MARGIN
+                            if "TJS" in rates: EXCHANGE_RATES["TJS"] = rates["TJS"] * COMMISSION_MARGIN
+                            if "KGS" in rates: EXCHANGE_RATES["KGS"] = rates["KGS"] * COMMISSION_MARGIN
+                            if "AZN" in rates: EXCHANGE_RATES["AZN"] = rates["AZN"] * COMMISSION_MARGIN
+                            logging.info(f"Курсы успешно обновлены по API: {EXCHANGE_RATES}")
+        except Exception as e:
+            logging.error(f"Ошибка обновления курсов: {e}")
+        
+        # Спим 1 час до следующего обновления
+        await asyncio.sleep(3600)
 
 
 @dp.message(CommandStart())
@@ -45,7 +79,7 @@ async def cmd_start(message: types.Message):
   )
   welcome_text = (
       "<b>🌐 Koro Pay — Международные переводы в СНГ</b>\n\n"
-      "Безопасно, быстро и по выгодному курсу.\n"
+      "Безопасно, быстро и по актуальному биржевому курсу.\n"
       "Лимит перевода: до 25 000 ₽ за раз.\n\n"
       "<i>Нажмите кнопку ниже, чтобы открыть приложение.</i>"
   )
@@ -62,10 +96,7 @@ async def api_order_handler(request):
     current_time = time.time()
     if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
       return web.json_response(
-          {
-              "status": "error",
-              "message": "Подождите минуту перед созданием новой заявки.",
-          },
+          {"status": "error", "message": "Подождите минуту перед созданием новой заявки."},
           status=400,
       )
     user_cooldowns[user_id] = current_time
@@ -76,6 +107,7 @@ async def api_order_handler(request):
     currency = data.get("currency", "VAL")
     recipient_name = data.get("recipient_name", "Не указано")
     recipient_card = data.get("recipient_card", "Не указано")
+    transfer_comment = data.get("transfer_comment", "Нет комментария")
     user_name = data.get("username", "Аноним")
 
     user_info = f"@{user_name}" if user_name != "Аноним" else f"ID: {user_id}"
@@ -98,9 +130,10 @@ async def api_order_handler(request):
         f"🌍 Направление: <b>{country}</b>\n"
         f"🇷🇺 Получено от клиента: <b>{rub_amount} RUB</b>\n"
         f"💶 К выплате получателю: <b>{local_received} {currency}</b>\n\n"
+        f"📝 <b>Комментарий к платежу:</b> <code>{transfer_comment}</code>\n\n"
         f"👤 Получатель: <b>{recipient_name}</b>\n"
         f"💳 Карта получателя: <code>{recipient_card}</code>\n\n"
-        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}). Если всё верно, нажмите кнопку:"
+        f"👉 Проверьте Озон Банк ({RECEIVE_CARD}) на сумму {rub_amount} RUB с комментарием '{transfer_comment}'. Если всё верно, нажмите кнопку:"
     )
 
     if ADMIN_CHAT_ID:
@@ -111,9 +144,7 @@ async def api_order_handler(request):
     return web.json_response({"status": "success", "tx_id": tx_id})
   except Exception as e:
     logging.error(f"Ошибка API: {e}")
-    return web.json_response(
-        {"status": "error", "message": str(e)}, status=400
-    )
+    return web.json_response({"status": "error", "message": str(e)}, status=400)
 
 
 @dp.callback_query(F.data.startswith("approve_"))
@@ -143,6 +174,7 @@ async def process_approve(callback: types.CallbackQuery):
 
 
 async def webapp_handler(request):
+  # Подставляем актуальные курсы из Python в HTML шаблон
   html_content = f"""
     <!DOCTYPE html>
     <html lang="ru">
@@ -228,11 +260,6 @@ async def webapp_handler(request):
             .timer {{
                 font-size: 14px; color: #f59e0b; text-align: center; font-weight: bold; margin-bottom: 10px;
             }}
-            .spinner {{
-                font-size: 40px; text-align: center; margin: 20px 0;
-                animation: pulse 1.5s infinite;
-            }}
-            @keyframes pulse {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}
 
             /* Модальное окно Оферты */
             .modal-overlay {{
@@ -261,10 +288,10 @@ async def webapp_handler(request):
                 <div class="form-group">
                     <label for="country">Страна назначения</label>
                     <select id="country" onchange="calculateLocal()">
-                        <option value="Uzbekistan|UZS|135">🇺🇿 Узбекистан (UZS)</option>
-                        <option value="Tajikistan|TJS|0.12">🇹🇯 Таджикистан (TJS)</option>
-                        <option value="Kyrgyzstan|KGS|0.95">🇰🇬 Киргизия (KGS)</option>
-                        <option value="Azerbaijan|AZN|0.018">🇦🇿 Азербайджан (AZN)</option>
+                        <option value="Uzbekistan|UZS|{EXCHANGE_RATES['UZS']}">🇺🇿 Узбекистан (UZS)</option>
+                        <option value="Tajikistan|TJS|{EXCHANGE_RATES['TJS']}">🇹🇯 Таджикистан (TJS)</option>
+                        <option value="Kyrgyzstan|KGS|{EXCHANGE_RATES['KGS']}">🇰🇬 Киргизия (KGS)</option>
+                        <option value="Azerbaijan|AZN|{EXCHANGE_RATES['AZN']}">🇦🇿 Азербайджан (AZN)</option>
                     </select>
                 </div>
 
@@ -275,7 +302,7 @@ async def webapp_handler(request):
 
                 <div class="calc-box">
                     <span>Получатель заберет:</span>
-                    <span class="calc-val" id="totalLocal">0 UZS</span>
+                    <span class="calc-val" id="totalLocal">0.00 UZS</span>
                 </div>
 
                 <div class="form-group">
@@ -312,24 +339,31 @@ async def webapp_handler(request):
                     <div style="font-size: 11px; color: var(--text-muted);">К ОПЛАТЕ:</div>
                     <div id="payRubSum" style="font-size: 20px; font-weight: bold; color: #c084fc; margin-top: 4px;">0 ₽</div>
                 </div>
+                
+                <div class="req-box">
+                    <div style="font-size: 11px; color: var(--text-muted);">ОБЯЗАТЕЛЬНЫЙ КОММЕНТАРИЙ К ПЕРЕВОДУ:</div>
+                    <div id="transferCommentText" style="font-size: 18px; font-weight: bold; margin-top: 4px; color: #f59e0b;">KORO-0000</div>
+                    <button class="copy-btn" id="copyCommentBtn" onclick="copyComment()">📋 Скопировать комментарий</button>
+                </div>
 
                 <div class="req-box">
                     <div style="font-size: 11px; color: var(--text-muted);">РЕКВИЗИТЫ ({RECEIVE_BANK}):</div>
                     <div style="font-size: 16px; font-weight: bold; margin-top: 4px; word-break: break-all;">{RECEIVE_CARD}</div>
                     <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Получатель: <b>{RECEIVE_HOLDER}</b></div>
-                    <button class="copy-btn" onclick="copyCard()">📋 Скопировать карту</button>
+                    <button class="copy-btn" id="copyCardBtn" onclick="copyCard()">📋 Скопировать карту</button>
                 </div>
 
                 <button class="main-btn" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(34,197,94,0.4);">Я оплатил(а)</button>
             </div>
 
-            <!-- ЭКРАН 3: ОЖИДАНИЕ -->
+            <!-- ЭКРАН 3: УСПЕШНАЯ ОТПРАВКА -->
             <div id="screenWait" class="screen" style="text-align: center;">
-                <div class="spinner">⏳</div>
-                <h3 style="margin: 0 0 8px 0;">Проверка платежа</h3>
+                <div style="font-size: 40px; margin: 20px 0;">✅</div>
+                <h3 style="margin: 0 0 8px 0;">Заявка отправлена!</h3>
                 <p style="color: var(--text-muted); font-size: 13px; line-height: 1.5;">
-                    Мы проверяем поступление средств. Пожалуйста, ожидайте статуса подтверждения.
+                    Мы проверяем поступление средств. Уведомление об успешном переводе придет вам прямо в этот чат от бота.
                 </p>
+                <button class="main-btn" onclick="tg.close()" style="margin-top: 20px; background: var(--card-inner); border: 1px solid var(--accent); box-shadow: none;">Вернуться в чат</button>
             </div>
         </div>
 
@@ -354,6 +388,7 @@ async def webapp_handler(request):
             let enteredRub = 0;
             let calculatedLocal = 0;
             let timerInterval;
+            let currentOrderCode = '';
 
             window.onload = function() {{ calculateLocal(); }};
 
@@ -372,15 +407,28 @@ async def webapp_handler(request):
                 currentMultiplier = parseFloat(val[2]);
 
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
-                calculatedLocal = Math.round(enteredRub * currentMultiplier);
-                document.getElementById('totalLocal').textContent = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU') + ' ' + currentCurr : '0 ' + currentCurr;
+                
+                // РАСЧЕТ С УЧЕТОМ КОПЕЕК (сотых долей)
+                calculatedLocal = enteredRub * currentMultiplier;
+                
+                // Форматируем до 2 знаков после запятой
+                let displayValue = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) : '0.00';
+                
+                document.getElementById('totalLocal').textContent = displayValue + ' ' + currentCurr;
             }}
 
             function copyCard() {{
                 navigator.clipboard.writeText("{RECEIVE_CARD}".replace(/\\s+/g, ''));
-                let btn = document.querySelector('.copy-btn');
+                let btn = document.getElementById('copyCardBtn');
                 btn.textContent = '✅ Скопировано!';
                 setTimeout(() => {{ btn.textContent = '📋 Скопировать карту'; }}, 2000);
+            }}
+
+            function copyComment() {{
+                navigator.clipboard.writeText(currentOrderCode);
+                let btn = document.getElementById('copyCommentBtn');
+                btn.textContent = '✅ Скопировано!';
+                setTimeout(() => {{ btn.textContent = '📋 Скопировать комментарий'; }}, 2000);
             }}
 
             function startTimer(duration) {{
@@ -411,6 +459,9 @@ async def webapp_handler(request):
                 if (!name || !card) {{ alert('Заполните данные получателя!'); return; }}
                 if (!termsChecked) {{ alert('Необходимо согласиться с условиями оферты!'); return; }}
 
+                currentOrderCode = 'KORO-' + Math.floor(1000 + Math.random() * 9000);
+                document.getElementById('transferCommentText').textContent = currentOrderCode;
+
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 document.getElementById('screenForm').classList.remove('active');
                 document.getElementById('screenPay').classList.add('active');
@@ -425,8 +476,9 @@ async def webapp_handler(request):
                 let user = (tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {{}};
 
                 clearInterval(timerInterval);
-                document.getElementById('screenPay').classList.remove('active');
-                document.getElementById('screenWait').classList.add('active');
+                
+                // Захватываем отформатированное значение для передачи в админку
+                let formattedLocal = calculatedLocal.toLocaleString('ru-RU', {{minimumFractionDigits: 2, maximumFractionDigits: 2}});
 
                 try {{
                     let response = await fetch('/api/order', {{
@@ -435,17 +487,28 @@ async def webapp_handler(request):
                         body: JSON.stringify({{
                             country: countryName,
                             rub_amount: enteredRub + ' ₽',
-                            local_received: calculatedLocal.toLocaleString('ru-RU'),
+                            local_received: formattedLocal,
                             currency: currentCurr,
                             recipient_name: name,
                             recipient_card: card,
+                            transfer_comment: currentOrderCode,
                             username: user.username || 'Аноним',
                             user_id: user.id || 0
                         }})
                     }});
                     let result = await response.json();
-                    if (!response.ok) {{ alert(result.message || 'Ошибка обработки.'); location.reload(); }}
-                }} catch (e) {{ alert('Ошибка связи с сервером.'); }}
+                    if (!response.ok) {{ 
+                        alert(result.message || 'Ошибка обработки.'); 
+                        location.reload(); 
+                        return;
+                    }}
+                    
+                    document.getElementById('screenPay').classList.remove('active');
+                    document.getElementById('screenWait').classList.add('active');
+                    
+                }} catch (e) {{ 
+                    alert('Ошибка связи с сервером.'); 
+                }}
             }}
         </script>
     </body>
@@ -464,8 +527,11 @@ async def main():
   port = int(os.environ.get("PORT", 8080))
   site = web.TCPSite(runner, "0.0.0.0", port)
   await site.start()
+  
+  # Запуск парсера актуальных курсов в фоновом режиме
+  asyncio.create_task(update_rates())
+  
   logging.info(f"Защищенный сервер запущен на порту {port}...")
-
   logging.info("Бот Koro Pay запущен...")
   await dp.start_polling(bot)
 
