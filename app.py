@@ -35,6 +35,7 @@ EXCHANGE_RATES = {"UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018}
 COMMISSION_MARGIN = 0.95 
 
 user_cooldowns = {}
+api_ip_cooldowns = {}  # Словарь для защиты API от спама (Rate Limit)
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -187,17 +188,47 @@ async def api_history_handler(request):
 
 async def api_order_handler(request):
     try:
+        # Защита Rate Limit: получаем IP клиента
+        peername = request.transport.get_extra_info("peername")
+        client_ip = peername[0] if peername else "127.0.0.1"
+
+        current_time = time.time()
+        if client_ip in api_ip_cooldowns:
+            last_time, count = api_ip_cooldowns[client_ip]
+            if current_time - last_time < 60:  # Окно 1 минута
+                if count >= 3:
+                    return web.json_response(
+                        {
+                            "status": "error",
+                            "message": "Слишком много запросов. Подождите минуту перед следующей заявкой.",
+                        },
+                        status=429,
+                    )
+                api_ip_cooldowns[client_ip] = (last_time, count + 1)
+            else:
+                api_ip_cooldowns[client_ip] = (current_time, 1)
+        else:
+            api_ip_cooldowns[client_ip] = (current_time, 1)
+
         data = await request.json()
         user_id = data.get("user_id", 0)
 
-        current_time = time.time()
+        # Старая проверка кулдауна по user_id тоже остается для надежности
         if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
-            return web.json_response({"status": "error", "message": "Подождите минуту перед созданием новой заявки."}, status=400)
+            return web.json_response(
+                {
+                    "status": "error",
+                    "message": "Подождите минуту перед созданием новой заявки.",
+                },
+                status=400,
+            )
         user_cooldowns[user_id] = current_time
 
         user_data = get_user(user_id)
         if user_data and user_data[3] == 1:
-            return web.json_response({"status": "error", "message": "Аккаунт заблокирован."}, status=403)
+            return web.json_response(
+                {"status": "error", "message": "Аккаунт заблокирован."}, status=403
+            )
 
         country = data.get("country", "СНГ")
         rub_amount = data.get("rub_amount", "0")
@@ -211,10 +242,12 @@ async def api_order_handler(request):
 
         tx_id = transfer_comment
 
-        conn = sqlite3.connect('koropay.db')
+        conn = sqlite3.connect("koropay.db")
         c = conn.cursor()
-        c.execute("INSERT INTO transfers VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                  (tx_id, user_id, country, rub_amount, local_received, currency, "PENDING"))
+        c.execute(
+            "INSERT INTO transfers VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tx_id, user_id, country, rub_amount, local_received, currency, "PENDING"),
+        )
         conn.commit()
         conn.close()
 
@@ -242,12 +275,15 @@ async def api_order_handler(request):
         )
 
         if ADMIN_CHAT_ID:
-            await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb)
+            await bot.send_message(
+                ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb
+            )
 
         return web.json_response({"status": "success", "tx_id": tx_id})
     except Exception as e:
         logging.error(f"Ошибка API: {e}")
         return web.json_response({"status": "error", "message": str(e)}, status=400)
+
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def process_approve(callback: types.CallbackQuery):
