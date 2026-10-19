@@ -114,50 +114,63 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
     if not os.path.exists(font_path):
         urllib.request.urlretrieve("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Medium.ttf", font_path)
     
-    font_text = ImageFont.truetype(font_path, 19)
-    font_small = ImageFont.truetype(font_path, 15)
+    # Настраиваем размеры шрифтов
+    font_value = ImageFont.truetype(font_path, 18)
+    font_label = ImageFont.truetype(font_path, 16)
+    font_small = ImageFont.truetype(font_path, 14)
 
-    img = Image.new('RGB', (600, 850), color='#05050C')
+    # Уменьшаем высоту холста для компактности
+    img = Image.new('RGB', (600, 750), color='#05050C')
     draw = ImageDraw.Draw(img)
 
+    # Отрисовываем "Карточку" чека (Surface) с закругленными краями
+    draw.rounded_rectangle([(20, 20), (580, 730)], radius=24, fill='#121322', outline='#1C1D33', width=2)
+
+    # Логотип
     logo_drawn = False
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
             logo.thumbnail((80, 80))
-            img.paste(logo, (260, 25), logo)
+            # Центрируем логотип
+            img.paste(logo, (260, 50), logo)
             logo_drawn = True
         except Exception as e:
             logging.error(f"Не удалось наложить логотип на чек: {e}")
 
     if not logo_drawn:
-        font_logo = ImageFont.truetype(font_path, 32)
-        draw.text((300, 45), "Koro Pay", font=font_logo, fill='#9667E0', anchor="mm")
+        font_logo = ImageFont.truetype(font_path, 36)
+        draw.text((300, 90), "Koro Pay", font=font_logo, fill='#9667E0', anchor="mm")
 
-    draw.text((300, 115), "ОФИЦИАЛЬНЫЙ ЧЕК ПЕРЕВОДА", font=font_small, fill='#8A8E9E', anchor="mm")
-    draw.line((40, 145, 560, 145), fill='#1C1D33', width=2)
+    # Заголовок чека
+    draw.text((300, 160), "ОФИЦИАЛЬНЫЙ ЧЕК ПЕРЕВОДА", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.line((60, 190, 540, 190), fill='#1C1D33', width=2)
 
-    y = 175
-    spacing = 58
+    y = 220
+    spacing = 48 # Делаем строки чуть ближе друг к другу
     
+    # Автоматически делаем ФИО с заглавных букв (иванов иван -> Иванов Иван)
+    formatted_name = name.title()
+
+    # Убрали эмодзи, чтобы не было "квадратиков" при рендере
     details = [
-        ("Статус:", "ВЫПОЛНЕН (ДОСТАВЛЕНО) ✅", '#30D158'),
+        ("Статус:", "УСПЕШНО (ДОСТАВЛЕН)", '#30D158'),
         ("Код транзакции:", tx_id, '#FFFFFF'),
         ("Дата и время:", datetime.now().strftime("%d.%m.%Y %H:%M"), '#FFFFFF'),
         ("Сумма списания:", f"{rub}", '#FFFFFF'),
         ("Сумма зачисления:", f"{local} {currency}", '#7C83FD'),
         ("Банк получателя:", bank, '#FFFFFF'),
-        ("Получатель:", name, '#FFFFFF'),
+        ("Получатель:", formatted_name, '#FFFFFF'),
         ("Счет / Карта:", card, '#FFFFFF')
     ]
 
     for label, val, color in details:
-        draw.text((40, y), label, font=font_text, fill='#8A8E9E')
-        draw.text((560, y), val, font=font_text, fill=color, anchor="ra")
+        draw.text((60, y), label, font=font_label, fill='#8A8E9E')
+        draw.text((540, y), val, font=font_value, fill=color, anchor="ra")
         y += spacing
 
-    draw.line((40, y + 10, 560, y + 10), fill='#1C1D33', width=2)
-    draw.text((300, y + 50), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
+    draw.line((60, y + 10, 540, y + 10), fill='#1C1D33', width=2)
+    draw.text((300, y + 45), "Платежи. Переводы. Больше.", font=font_small, fill='#8A8E9E', anchor="mm")
 
     bio = BytesIO()
     img.save(bio, 'PNG')
@@ -610,7 +623,7 @@ async def webapp_handler(request):
                         <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary-light);">›</span>
                     </div>
                     <div class="receipt-row" style="padding: 14px 0; margin:0;">
-                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">Koro Pay v1.1.0 Async</span>
+                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">Koro Pay v1.0.0.0</span>
                     </div>
                 </div>
             </div>
@@ -864,7 +877,7 @@ async def main():
     
     asyncio.create_task(update_rates())
     
-    logging.info(f"Сервер Koro Pay v1.1.0 Async запущен...")
+    logging.info(f"Сервер Koro Pay запущен...")
     await dp.start_polling(bot)
 
 
