@@ -4,11 +4,15 @@ import logging
 import os
 import random
 import time
-import sqlite3
+import hmac
+import hashlib
+from urllib.parse import parse_qsl
+import csv
 import aiohttp
+import aiosqlite
 import urllib.request
 from datetime import datetime
-from io import BytesIO
+from io import BytesIO, StringIO
 from PIL import Image, ImageDraw, ImageFont
 
 from aiogram import Bot, Dispatcher, F, types
@@ -17,17 +21,17 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     WebAppInfo,
-    BufferedInputFile
+    BufferedInputFile,
+    FSInputFile
 )
 from aiohttp import web
 
-# === ТОКЕН БОТА ===
+# === НАСТРОЙКИ СЕРВЕРА ===
 TOKEN = "8639644231:AAGNysKoCaTQyqg0pvPEXUxgOH5nJgG-pAk"
 ADMIN_CHAT_ID = 6084347801
 WEBAPP_URL = "https://koropay-en5x.onrender.com"
-# ===================
+# =========================
 
-RECEIVE_CARD = "2200 3204 4647 4787"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
@@ -35,38 +39,58 @@ EXCHANGE_RATES = {"UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018}
 COMMISSION_MARGIN = 0.95 
 
 user_cooldowns = {}
-api_ip_cooldowns = {}  # Словарь для защиты API от спама (Rate Limit)
+api_ip_cooldowns = {}
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-def init_db():
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id INTEGER PRIMARY KEY, username TEXT, strikes INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS transfers 
-                 (tx_id TEXT PRIMARY KEY, user_id INTEGER, country TEXT, rub_amount TEXT, local_amount TEXT, currency TEXT, status TEXT)''')
-    conn.commit()
-    conn.close()
+# --- ВАЛИДАЦИЯ ТЕЛЕГРАМ (БЕЗОПАСНОСТЬ) ---
+def validate_webapp_data(init_data: str, bot_token: str) -> bool:
+    try:
+        parsed_data = dict(parse_qsl(init_data))
+        if 'hash' not in parsed_data:
+            return False
+        hash_val = parsed_data.pop('hash')
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items()))
+        secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+        calc_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        return calc_hash == hash_val
+    except Exception:
+        return False
 
-def get_user(user_id):
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
-    user = c.fetchone()
-    conn.close()
-    return user
+# --- АСИНХРОННАЯ БАЗА ДАННЫХ (AIOSQLITE) ---
+async def init_db():
+    async with aiosqlite.connect('koropay.db') as db:
+        await db.execute('''CREATE TABLE IF NOT EXISTS users 
+                     (user_id INTEGER PRIMARY KEY, username TEXT, strikes INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS transfers 
+                     (tx_id TEXT PRIMARY KEY, user_id INTEGER, country TEXT, rub_amount TEXT, local_amount TEXT, currency TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS settings 
+                     (key TEXT PRIMARY KEY, value TEXT)''')
+        
+        # Добавляем реквизиты по умолчанию, если их нет
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('receive_card', '2200 3204 4647 4787')")
+        await db.commit()
 
-def add_strike(user_id):
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute("UPDATE users SET strikes = strikes + 1 WHERE user_id=?", (user_id,))
-    c.execute("UPDATE users SET is_banned = 1 WHERE user_id=? AND strikes >= 3", (user_id,))
-    conn.commit()
-    conn.close()
+async def get_user(user_id):
+    async with aiosqlite.connect('koropay.db') as db:
+        async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as cursor:
+            return await cursor.fetchone()
 
+async def add_strike(user_id):
+    async with aiosqlite.connect('koropay.db') as db:
+        await db.execute("UPDATE users SET strikes = strikes + 1 WHERE user_id=?", (user_id,))
+        await db.execute("UPDATE users SET is_banned = 1 WHERE user_id=? AND strikes >= 3", (user_id,))
+        await db.commit()
+
+async def get_active_card():
+    async with aiosqlite.connect('koropay.db') as db:
+        async with db.execute("SELECT value FROM settings WHERE key='receive_card'") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else "2200 3204 4647 4787"
+
+# --- ФОНОВЫЕ ЗАДАЧИ ---
 async def update_rates():
     global EXCHANGE_RATES
     while True:
@@ -141,18 +165,17 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
     return bio
 
 
+# --- BOT HANDLERS & CRM ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "Аноним"
     
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
-    conn.commit()
-    conn.close()
+    async with aiosqlite.connect('koropay.db') as db:
+        await db.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+        await db.commit()
 
-    user_data = get_user(user_id)
+    user_data = await get_user(user_id)
     if user_data and user_data[3] == 1:
         await message.answer("🚫 Ваш аккаунт заблокирован за нарушение правил сервиса.")
         return
@@ -167,43 +190,95 @@ async def cmd_start(message: types.Message):
         reply_markup=web_app_kb, parse_mode="HTML"
     )
 
+@dp.message(Command("setcard"))
+async def cmd_setcard(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    new_card = message.text.replace("/setcard", "").strip()
+    if not new_card:
+        await message.answer("Использование: /setcard 1111 2222 3333 4444")
+        return
+        
+    async with aiosqlite.connect('koropay.db') as db:
+        await db.execute("UPDATE settings SET value=? WHERE key='receive_card'", (new_card,))
+        await db.commit()
+    await message.answer(f"✅ Реквизиты для приема платежей успешно обновлены на:\n<code>{new_card}</code>", parse_mode="HTML")
+
+@dp.message(Command("user"))
+async def cmd_user(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    try:
+        target_id = int(message.text.split()[1])
+        u_data = await get_user(target_id)
+        if not u_data:
+            await message.answer("Пользователь не найден.")
+            return
+            
+        async with aiosqlite.connect('koropay.db') as db:
+            async with db.execute("SELECT COUNT(*), status FROM transfers WHERE user_id=? GROUP BY status", (target_id,)) as cursor:
+                stats = await cursor.fetchall()
+                
+        stat_text = "\n".join([f"{s[1]}: {s[0]} шт." for s in stats]) if stats else "Нет переводов"
+        ban_status = "ДА 🔴" if u_data[3] else "НЕТ 🟢"
+        
+        await message.answer(
+            f"👤 <b>Досье клиента:</b> <code>{target_id}</code> (@{u_data[1]})\n"
+            f"Страйков безопасности: {u_data[2]}/3\n"
+            f"Бан: {ban_status}\n\n"
+            f"<b>Статистика операций:</b>\n{stat_text}",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await message.answer("Использование: /user 123456789")
+
+@dp.message(Command("export"))
+async def cmd_export(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    
+    csv_file = StringIO()
+    writer = csv.writer(csv_file)
+    writer.writerow(["TX_ID", "USER_ID", "COUNTRY", "RUB", "LOCAL", "CURRENCY", "STATUS", "DATE"])
+    
+    async with aiosqlite.connect('koropay.db') as db:
+        async with db.execute("SELECT * FROM transfers ORDER BY ROWID DESC") as cursor:
+            rows = await cursor.fetchall()
+            for row in rows:
+                writer.writerow(row)
+                
+    bio = BytesIO(csv_file.getvalue().encode('utf-8'))
+    file = BufferedInputFile(bio.getvalue(), filename=f"KoroPay_Export_{datetime.now().strftime('%Y%m%d')}.csv")
+    await message.answer_document(document=file, caption="📊 Реестр всех переводов выгружен.")
+
+
+# --- API ШЛЮЗЫ ---
 async def api_history_handler(request):
     try:
         user_id = int(request.rel_url.query.get('user_id', 0))
-        conn = sqlite3.connect('koropay.db')
-        c = conn.cursor()
-        c.execute("SELECT tx_id, country, rub_amount, local_amount, currency, status FROM transfers WHERE user_id=? ORDER BY ROWID DESC LIMIT 15", (user_id,))
-        history = c.fetchall()
-        conn.close()
+        init_data = request.rel_url.query.get('initData', '')
         
-        result = []
-        for tx in history:
-            result.append({
-                "tx_id": tx[0], "country": tx[1], "rub": tx[2], 
-                "local": tx[3], "currency": tx[4], "status": tx[5]
-            })
+        # Защита: проверяем подпись Телеграм
+        if not validate_webapp_data(init_data, TOKEN):
+            return web.json_response({"status": "error", "message": "Unauthorized request"}, status=403)
+
+        async with aiosqlite.connect('koropay.db') as db:
+            async with db.execute("SELECT tx_id, country, rub_amount, local_amount, currency, status FROM transfers WHERE user_id=? ORDER BY ROWID DESC LIMIT 15", (user_id,)) as cursor:
+                history = await cursor.fetchall()
+        
+        result = [{"tx_id": tx[0], "country": tx[1], "rub": tx[2], "local": tx[3], "currency": tx[4], "status": tx[5]} for tx in history]
         return web.json_response({"status": "success", "data": result})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=400)
 
 async def api_order_handler(request):
     try:
-        # Защита Rate Limit: получаем IP клиента
         peername = request.transport.get_extra_info("peername")
         client_ip = peername[0] if peername else "127.0.0.1"
 
         current_time = time.time()
         if client_ip in api_ip_cooldowns:
             last_time, count = api_ip_cooldowns[client_ip]
-            if current_time - last_time < 60:  # Окно 1 минута
+            if current_time - last_time < 60:
                 if count >= 3:
-                    return web.json_response(
-                        {
-                            "status": "error",
-                            "message": "Слишком много запросов. Подождите минуту перед следующей заявкой.",
-                        },
-                        status=429,
-                    )
+                    return web.json_response({"status": "error", "message": "Слишком много запросов."}, status=429)
                 api_ip_cooldowns[client_ip] = (last_time, count + 1)
             else:
                 api_ip_cooldowns[client_ip] = (current_time, 1)
@@ -211,24 +286,20 @@ async def api_order_handler(request):
             api_ip_cooldowns[client_ip] = (current_time, 1)
 
         data = await request.json()
-        user_id = data.get("user_id", 0)
+        init_data = data.get("initData", "")
+        
+        # 🛡 КРИПТОГРАФИЧЕСКАЯ ЗАЩИТА ТРАНЗАКЦИЙ
+        if not validate_webapp_data(init_data, TOKEN):
+            return web.json_response({"status": "error", "message": "Взлом или неверная подпись WebApp"}, status=403)
 
-        # Старая проверка кулдауна по user_id тоже остается для надежности
+        user_id = data.get("user_id", 0)
         if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
-            return web.json_response(
-                {
-                    "status": "error",
-                    "message": "Подождите минуту перед созданием новой заявки.",
-                },
-                status=400,
-            )
+            return web.json_response({"status": "error", "message": "Подождите минуту."}, status=400)
         user_cooldowns[user_id] = current_time
 
-        user_data = get_user(user_id)
+        user_data = await get_user(user_id)
         if user_data and user_data[3] == 1:
-            return web.json_response(
-                {"status": "error", "message": "Аккаунт заблокирован."}, status=403
-            )
+            return web.json_response({"status": "error", "message": "Аккаунт заблокирован."}, status=403)
 
         country = data.get("country", "СНГ")
         rub_amount = data.get("rub_amount", "0")
@@ -239,45 +310,38 @@ async def api_order_handler(request):
         recipient_card = data.get("recipient_card", "Не указано")
         transfer_comment = data.get("transfer_comment", "Нет комментария")
         user_name = data.get("username", "Аноним")
-
         tx_id = transfer_comment
 
-        conn = sqlite3.connect("koropay.db")
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO transfers VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (tx_id, user_id, country, rub_amount, local_received, currency, "PENDING"),
-        )
-        conn.commit()
-        conn.close()
+        async with aiosqlite.connect("koropay.db") as db:
+            await db.execute(
+                "INSERT INTO transfers (tx_id, user_id, country, rub_amount, local_amount, currency, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (tx_id, user_id, country, rub_amount, local_received, currency, "PENDING")
+            )
+            await db.commit()
+
+        active_card = await get_active_card()
 
         admin_kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Перевод получателю выполнен", callback_data=f"approve_{user_id}_{tx_id}")],
-                [InlineKeyboardButton(text="❌ Отмена: Фейк / Нет платежа", callback_data=f"rej_fake_{user_id}_{tx_id}")],
-                [InlineKeyboardButton(text="❌ Отмена: Неверный комментарий", callback_data=f"rej_comm_{user_id}_{tx_id}")],
-                [InlineKeyboardButton(text="❌ Отмена: Подозрение AML", callback_data=f"rej_aml_{user_id}_{tx_id}")]
+                [InlineKeyboardButton(text="✅ Выполнен", callback_data=f"approve_{user_id}_{tx_id}")],
+                [InlineKeyboardButton(text="❌ Отмена: Нет платежа", callback_data=f"rej_fake_{user_id}_{tx_id}")],
+                [InlineKeyboardButton(text="❌ Отмена: AML", callback_data=f"rej_aml_{user_id}_{tx_id}")]
             ]
         )
 
         admin_message = (
-            f"🚨 <b>НОВАЯ ЗАЯВКА НА ПЕРЕВОД!</b>\n\n"
+            f"🚨 <b>НОВАЯ ЗАЯВКА!</b>\n\n"
             f"👤 Клиент: @{user_name} (ID: <code>{user_id}</code>)\n"
             f"🆔 Транзакция: <code>{tx_id}</code>\n\n"
-            f"<b>ИНСТРУКЦИЯ ДЛЯ ТЕБЯ:</b>\n"
-            f"1️⃣ Проверь поступление <b>{rub_amount}</b> на {RECEIVE_BANK} с комментарием <code>{tx_id}</code>.\n"
-            f"2️⃣ Переведи <b>{local_received} {currency}</b> получателю:\n"
+            f"1️⃣ Проверь поступление <b>{rub_amount}</b> на реквизиты:\n<code>{active_card}</code>\n"
+            f"2️⃣ Переведи <b>{local_received} {currency}</b>:\n"
             f"   🏦 Банк: <b>{recipient_bank}</b>\n"
-            f"   💳 Карта/Счет: <code>{recipient_card}</code>\n"
+            f"   💳 Карта: <code>{recipient_card}</code>\n"
             f"   👤 ФИО: <b>{recipient_name}</b>\n"
-            f"   🌍 Страна: {country}\n"
-            f"3️⃣ Выберите результат ниже."
         )
 
         if ADMIN_CHAT_ID:
-            await bot.send_message(
-                ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb
-            )
+            await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb)
 
         return web.json_response({"status": "success", "tx_id": tx_id})
     except Exception as e:
@@ -291,40 +355,28 @@ async def process_approve(callback: types.CallbackQuery):
     target_user_id = int(parts[1])
     tx_id = parts[2]
 
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=?", (tx_id,))
-    tx_data = c.fetchone()
-    
-    c.execute("UPDATE transfers SET status='SUCCESS' WHERE tx_id=?", (tx_id,))
-    conn.commit()
-    conn.close()
+    async with aiosqlite.connect('koropay.db') as db:
+        async with db.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=?", (tx_id,)) as cursor:
+            tx_data = await cursor.fetchone()
+        await db.execute("UPDATE transfers SET status='SUCCESS' WHERE tx_id=?", (tx_id,))
+        await db.commit()
 
-    await callback.message.edit_text(callback.message.text + f"\n\n✅ <b>ПЕРЕВОД УСПЕШНО ЗАВЕРШЕН И ЧЕК ОТПРАВЛЕН!</b>", parse_mode="HTML")
+    await callback.message.edit_text(callback.message.text + f"\n\n✅ <b>ЗАВЕРШЕН И ЧЕК ОТПРАВЛЕН!</b>", parse_mode="HTML")
     
     try:
         if tx_data:
             msg_text = callback.message.text
             bank = msg_text.split("Банк: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
-            card = msg_text.split("Карта/Счет: ")[1].split("\n")[0]
+            card = msg_text.split("Карта: ")[1].split("\n")[0]
             name = msg_text.split("ФИО: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
             
             image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, bank, card)
-            photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_Receipt_{tx_id}.png")
+            photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_{tx_id}.png")
             
-            success_text = (
-                f"🎉 <b>Перевод успешно доставлен!</b>\n\n"
-                f"Уведомляем вас о том, что <b>получатель успешно получил денежные средства</b>.\n\n"
-                f"🆔 Транзакция: <code>{tx_id}</code>\n\n"
-                f"Официальный электронный чек прикреплен выше. Спасибо, что выбрали Koro Pay!"
-            )
-            await bot.send_photo(target_user_id, photo=photo, caption=success_text, parse_mode="HTML")
-        else:
-            await bot.send_message(target_user_id, f"🎉 <b>Перевод {tx_id} выполнен! Получатель получил средства.</b>", parse_mode="HTML")
+            await bot.send_photo(target_user_id, photo=photo, caption=f"🎉 <b>Перевод успешно доставлен!</b>\n🆔 <code>{tx_id}</code>", parse_mode="HTML")
     except Exception as e: 
-        logging.error(f"Ошибка отправки чека: {e}")
-        
-    await callback.answer("Уведомление и чек отправлены!")
+        logging.error(f"Ошибка чека: {e}")
+    await callback.answer("Успешно!")
 
 @dp.callback_query(F.data.startswith("rej_"))
 async def process_reject(callback: types.CallbackQuery):
@@ -333,34 +385,25 @@ async def process_reject(callback: types.CallbackQuery):
     target_user_id = int(parts[2])
     tx_id = parts[3]
 
-    reasons = {
-        "fake": "платеж не поступил на реквизиты сервиса (не найден перевод)",
-        "comm": "указан неверный или отсутствующий комментарий к платежу",
-        "aml": "сработали правила безопасности и AML-контроля сервиса"
-    }
-    reason_text = reasons.get(reason_type, "нарушение регламента проведения операций")
+    reason_text = "нарушение правил"
+    if reason_type == "fake": reason_text = "платеж не поступил"
+    elif reason_type == "aml": reason_text = "сработал AML-контроль"
 
-    conn = sqlite3.connect('koropay.db')
-    c = conn.cursor()
-    c.execute("UPDATE transfers SET status='REJECTED' WHERE tx_id=?", (tx_id,))
-    conn.commit()
-    conn.close()
-    add_strike(target_user_id)
+    async with aiosqlite.connect('koropay.db') as db:
+        await db.execute("UPDATE transfers SET status='REJECTED' WHERE tx_id=?", (tx_id,))
+        await db.commit()
+    await add_strike(target_user_id)
 
     await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ОТМЕНЕНО: {reason_text.upper()}</b>", parse_mode="HTML")
     try:
-        await bot.send_message(
-            target_user_id, 
-            f"❌ Ваш перевод <code>{tx_id}</code> <b>отменен</b>.\n\n"
-            f"<b>Причина отмены:</b> {reason_text}.\n\n"
-            f"Заявка аннулирована. При возникновении вопросов обратитесь в поддержку.", 
-            parse_mode="HTML"
-        )
+        await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> отменен.\nПричина: {reason_text}.", parse_mode="HTML")
     except: pass
-    await callback.answer("Заявка отклонена, клиент уведомлен.")
+    await callback.answer("Отклонено.")
 
 async def webapp_handler(request):
-  html_content = """
+    current_card = await get_active_card()
+    
+    html_content = """
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -463,12 +506,7 @@ async def webapp_handler(request):
                     </div>
                     <div class="input-group">
                         <label>Банк получателя</label>
-                        <select id="recipientBank" onchange="saveDraft()">
-                            <option value="UzCard / Humo">UzCard / Humo (Любой банк)</option>
-                            <option value="KapitalBank">KapitalBank</option>
-                            <option value="Tenge Bank">Tenge Bank</option>
-                            <option value="Ipoteka Bank">Ipoteka Bank</option>
-                        </select>
+                        <select id="recipientBank" onchange="saveDraft()"></select>
                     </div>
                     <div class="input-group">
                         <label>Сумма перевода (₽)</label>
@@ -537,10 +575,10 @@ async def webapp_handler(request):
                 </div>
 
                 <div class="card-panel">
-                    <label>Реквизиты (Озон Банк)</label>
-                    <div style="font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px;">2200 3204 4647 4787</div>
-                    <div style="font-size: 14px; color: var(--text-sec); font-weight: 500;">Mirelem Ismailzade</div>
-                    <button class="btn-copy" id="btnCopyCard" onclick="copyText('2200 3204 4647 4787', 'btnCopyCard')">Скопировать номер карты</button>
+                    <label>Реквизиты для оплаты</label>
+                    <div style="font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-bottom: 4px;">ACTUAL_SYSTEM_CARD</div>
+                    <div style="font-size: 14px; color: var(--text-sec); font-weight: 500;">Озон Банк (Mirelem Ismailzade)</div>
+                    <button class="btn-copy" id="btnCopyCard" onclick="copyText('ACTUAL_SYSTEM_CARD', 'btnCopyCard')">Скопировать номер карты</button>
                 </div>
 
                 <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
@@ -572,7 +610,7 @@ async def webapp_handler(request):
                         <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary-light);">›</span>
                     </div>
                     <div class="receipt-row" style="padding: 14px 0; margin:0;">
-                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">Koro Pay v1.0.0.0</span>
+                        <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">Koro Pay v1.1.0 Async</span>
                     </div>
                 </div>
             </div>
@@ -623,7 +661,6 @@ async def webapp_handler(request):
 
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
 
-            // --- ФУНКЦИЯ СОХРАНЕНИЯ ЧЕРНОВИКА ---
             function saveDraft() {
                 localStorage.setItem('koro_country', document.getElementById('country').value);
                 localStorage.setItem('koro_bank', document.getElementById('recipientBank').value);
@@ -633,9 +670,8 @@ async def webapp_handler(request):
             }
 
             window.onload = function() { 
-                // --- ВОССТАНОВЛЕНИЕ ЧЕРНОВИКА ПРИ ЗАПУСКЕ ---
                 if (localStorage.getItem('koro_country')) document.getElementById('country').value = localStorage.getItem('koro_country');
-                updateBanks(); // Загружаем банки для выбранной страны
+                updateBanks(); 
                 if (localStorage.getItem('koro_bank')) document.getElementById('recipientBank').value = localStorage.getItem('koro_bank');
                 if (localStorage.getItem('koro_amount')) document.getElementById('amount').value = localStorage.getItem('koro_amount');
                 if (localStorage.getItem('koro_card')) document.getElementById('recCard').value = localStorage.getItem('koro_card');
@@ -662,7 +698,7 @@ async def webapp_handler(request):
             function formatCard(input) {
                 let val = input.value.replace(/\D/g, '');
                 input.value = val.match(/.{1,4}/g)?.join(' ') || '';
-                saveDraft(); // Сохраняем после форматирования
+                saveDraft();
             }
 
             function setAmount(val) { haptic(); document.getElementById('amount').value = val; calculateParams(); }
@@ -701,7 +737,7 @@ async def webapp_handler(request):
                 let displayVal = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '0.00';
                 document.getElementById('totalLocal').textContent = displayVal + ' ' + currentCurr;
                 
-                saveDraft(); // Сохраняем все при пересчете
+                saveDraft();
             }
 
             function copyText(text, btnId) {
@@ -717,8 +753,10 @@ async def webapp_handler(request):
                 let user_id = tg.initDataUnsafe?.user?.id || 0;
                 let container = document.getElementById('historyContainer');
                 try {
-                    let response = await fetch('/api/history?user_id=' + user_id);
+                    let response = await fetch(`/api/history?user_id=${user_id}&initData=${encodeURIComponent(tg.initData)}`);
                     let res = await response.json();
+                    
+                    if(res.status !== 'success') throw new Error();
                     
                     if(res.data.length === 0) {
                         container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--text-sec); font-weight: 500;">У вас пока нет операций</div>';
@@ -743,7 +781,7 @@ async def webapp_handler(request):
                             </div>
                         `;
                     });
-                } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>'; }
+                } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка или нет доступа</div>'; }
             }
 
             function startTimer(duration) {
@@ -771,7 +809,6 @@ async def webapp_handler(request):
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 
-                // Очищаем черновик перед переходом к оплате, чтобы следующий перевод был "чистым"
                 localStorage.clear();
 
                 document.getElementById('bottomNav').style.display = 'none';
@@ -787,6 +824,7 @@ async def webapp_handler(request):
                     let response = await fetch('/api/order', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
+                            initData: tg.initData, // КРИПТОГРАФИЧЕСКАЯ ПОДПИСЬ ТЕЛЕГРАМ
                             country: document.getElementById('country').value.split('|')[0],
                             recipient_bank: document.getElementById('recipientBank').value,
                             rub_amount: enteredRub + ' ₽',
@@ -807,26 +845,28 @@ async def webapp_handler(request):
         </script>
     </body>
     </html>
-    """
-  return web.Response(text=html_content, content_type="text/html")
+    """.replace("ACTUAL_SYSTEM_CARD", current_card)
+
+    return web.Response(text=html_content, content_type="text/html")
 
 
 async def main():
-  init_db()
-  app = web.Application()
-  app.router.add_get("/", webapp_handler)
-  app.router.add_post("/api/order", api_order_handler)
-  app.router.add_get("/api/history", api_history_handler)
-  runner = web.AppRunner(app)
-  await runner.setup()
-  site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080)))
-  await site.start()
-  
-  asyncio.create_task(update_rates())
-  
-  logging.info(f"Сервер Koro Pay запущен...")
-  await dp.start_polling(bot)
+    await init_db()
+    app = web.Application()
+    app.router.add_get("/", webapp_handler)
+    app.router.add_post("/api/order", api_order_handler)
+    app.router.add_get("/api/history", api_history_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080)))
+    await site.start()
+    
+    asyncio.create_task(update_rates())
+    
+    logging.info(f"Сервер Koro Pay v1.1.0 Async запущен...")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-  asyncio.run(main())
+    asyncio.run(main())
