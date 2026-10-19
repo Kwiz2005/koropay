@@ -463,7 +463,7 @@ async def webapp_handler(request):
                     </div>
                     <div class="input-group">
                         <label>Банк получателя</label>
-                        <select id="recipientBank">
+                        <select id="recipientBank" onchange="saveDraft()">
                             <option value="UzCard / Humo">UzCard / Humo (Любой банк)</option>
                             <option value="KapitalBank">KapitalBank</option>
                             <option value="Tenge Bank">Tenge Bank</option>
@@ -489,7 +489,7 @@ async def webapp_handler(request):
                     </div>
                     <div class="input-group">
                         <label>ФИО получателя</label>
-                        <input type="text" id="recName" placeholder="Иванов Иван Иванович">
+                        <input type="text" id="recName" placeholder="Иванов Иван Иванович" oninput="saveDraft()">
                     </div>
                 </div>
 
@@ -623,8 +623,24 @@ async def webapp_handler(request):
 
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
 
+            // --- ФУНКЦИЯ СОХРАНЕНИЯ ЧЕРНОВИКА ---
+            function saveDraft() {
+                localStorage.setItem('koro_country', document.getElementById('country').value);
+                localStorage.setItem('koro_bank', document.getElementById('recipientBank').value);
+                localStorage.setItem('koro_amount', document.getElementById('amount').value);
+                localStorage.setItem('koro_card', document.getElementById('recCard').value);
+                localStorage.setItem('koro_name', document.getElementById('recName').value);
+            }
+
             window.onload = function() { 
-                updateBanks();
+                // --- ВОССТАНОВЛЕНИЕ ЧЕРНОВИКА ПРИ ЗАПУСКЕ ---
+                if (localStorage.getItem('koro_country')) document.getElementById('country').value = localStorage.getItem('koro_country');
+                updateBanks(); // Загружаем банки для выбранной страны
+                if (localStorage.getItem('koro_bank')) document.getElementById('recipientBank').value = localStorage.getItem('koro_bank');
+                if (localStorage.getItem('koro_amount')) document.getElementById('amount').value = localStorage.getItem('koro_amount');
+                if (localStorage.getItem('koro_card')) document.getElementById('recCard').value = localStorage.getItem('koro_card');
+                if (localStorage.getItem('koro_name')) document.getElementById('recName').value = localStorage.getItem('koro_name');
+
                 calculateParams(); 
             };
 
@@ -646,6 +662,7 @@ async def webapp_handler(request):
             function formatCard(input) {
                 let val = input.value.replace(/\D/g, '');
                 input.value = val.match(/.{1,4}/g)?.join(' ') || '';
+                saveDraft(); // Сохраняем после форматирования
             }
 
             function setAmount(val) { haptic(); document.getElementById('amount').value = val; calculateParams(); }
@@ -683,6 +700,8 @@ async def webapp_handler(request):
                 
                 let displayVal = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '0.00';
                 document.getElementById('totalLocal').textContent = displayVal + ' ' + currentCurr;
+                
+                saveDraft(); // Сохраняем все при пересчете
             }
 
             function copyText(text, btnId) {
@@ -752,6 +771,9 @@ async def webapp_handler(request):
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 
+                // Очищаем черновик перед переходом к оплате, чтобы следующий перевод был "чистым"
+                localStorage.clear();
+
                 document.getElementById('bottomNav').style.display = 'none';
                 switchTab('tab-payment', null);
                 startTimer(900);
