@@ -35,7 +35,12 @@ WEBAPP_URL = "https://koropay-en5x.onrender.com"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
-EXCHANGE_RATES = {"UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018}
+# Базовые курсы для всех стран, они будут обновляться через API
+EXCHANGE_RATES = {
+    "UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018,
+    "KZT": 5.15, "AMD": 4.15, "GEL": 0.028, "MDL": 0.18,
+    "EUR": 0.0095, "USD": 0.01
+}
 COMMISSION_MARGIN = 0.95 
 
 user_cooldowns = {}
@@ -104,6 +109,12 @@ async def update_rates():
                             if "TJS" in rates: EXCHANGE_RATES["TJS"] = rates["TJS"] * COMMISSION_MARGIN
                             if "KGS" in rates: EXCHANGE_RATES["KGS"] = rates["KGS"] * COMMISSION_MARGIN
                             if "AZN" in rates: EXCHANGE_RATES["AZN"] = rates["AZN"] * COMMISSION_MARGIN
+                            if "KZT" in rates: EXCHANGE_RATES["KZT"] = rates["KZT"] * COMMISSION_MARGIN
+                            if "AMD" in rates: EXCHANGE_RATES["AMD"] = rates["AMD"] * COMMISSION_MARGIN
+                            if "GEL" in rates: EXCHANGE_RATES["GEL"] = rates["GEL"] * COMMISSION_MARGIN
+                            if "MDL" in rates: EXCHANGE_RATES["MDL"] = rates["MDL"] * COMMISSION_MARGIN
+                            if "EUR" in rates: EXCHANGE_RATES["EUR"] = rates["EUR"] * COMMISSION_MARGIN
+                            if "USD" in rates: EXCHANGE_RATES["USD"] = rates["USD"] * COMMISSION_MARGIN
         except Exception as e:
             logging.error(f"Ошибка обновления курсов: {e}")
         await asyncio.sleep(3600)
@@ -515,6 +526,7 @@ async def webapp_handler(request):
             
             .btn-primary { width: 100%; padding: 16px; background: var(--primary-grad); color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s; }
             .btn-primary:active { opacity: 0.8; }
+            .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
             .btn-copy { background: var(--surface-hover); color: var(--primary-light); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }
 
             .checkbox-wrapper { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }
@@ -566,6 +578,12 @@ async def webapp_handler(request):
                             <option value="Tajikistan|TJS|0.115">🇹🇯 Таджикистан (TJS)</option>
                             <option value="Kyrgyzstan|KGS|0.95">🇰🇬 Киргизия (KGS)</option>
                             <option value="Azerbaijan|AZN|0.018">🇦🇿 Азербайджан (AZN)</option>
+                            <option value="Kazakhstan|KZT|5.15">🇰🇿 Казахстан (KZT)</option>
+                            <option value="Armenia|AMD|4.15">🇦🇲 Армения (AMD)</option>
+                            <option value="Georgia|GEL|0.028">🇬🇪 Грузия (GEL)</option>
+                            <option value="Moldova|MDL|0.18">🇲🇩 Молдова (MDL)</option>
+                            <option value="Europe|EUR|0.0095">🇪🇺 Европа (EUR)</option>
+                            <option value="Worldwide|USD|0.01">🌍 Весь мир (USD)</option>
                         </select>
                     </div>
                     <div class="input-group">
@@ -587,7 +605,7 @@ async def webapp_handler(request):
                 <div class="card-panel">
                     <div class="input-group">
                         <label>Номер карты / счета</label>
-                        <input type="tel" id="recCard" placeholder="0000 0000 0000 0000" maxlength="23" oninput="formatCard(this)">
+                        <input type="tel" id="recCard" placeholder="0000 0000 0000 0000" maxlength="23" pattern="[0-9 ]*" oninput="formatCard(this)">
                     </div>
                     <div class="input-group">
                         <label>ФИО получателя</label>
@@ -645,7 +663,7 @@ async def webapp_handler(request):
                     <button class="btn-copy" id="btnCopyCard" onclick="copyText('ACTUAL_SYSTEM_CARD', 'btnCopyCard')">Скопировать номер карты</button>
                 </div>
 
-                <button class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
+                <button id="btnConfirmPay" class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
             </div>
 
             <div id="tab-history" class="screen">
@@ -717,10 +735,16 @@ async def webapp_handler(request):
             tg.ready();
 
             const banksData = {
-                "Uzbekistan": ["UzCard / Humo (Любой банк)", "KapitalBank", "Tenge Bank", "Ipoteka Bank", "AloqaBank", "AgroBank"],
-                "Tajikistan": ["Alif Bank", "Spitamen Bank", "Eskhata Bank", "Cori Standard", "Dushanbe City"],
-                "Kyrgyzstan": ["Optima Bank", "MBank (МБанк)", "Demir Bank", "RSK Bank", "Bai-Tushum"],
-                "Azerbaijan": ["Kapital Bank", "Leobank", "ABB (Международный банк)", "Unibank", "Pasha Bank"]
+                "Uzbekistan": ["UzCard / Humo (Любой банк)", "Kapital Bank", "NBU", "SQB", "Agrobank", "Ipoteka Bank", "Tenge Bank", "AloqaBank", "Asaka Bank"],
+                "Tajikistan": ["Корти Милли (Любой банк)", "Alif Bank", "Dushanbe City", "Spitamen Bank", "Eskhata Bank", "Amonatbank"],
+                "Kyrgyzstan": ["Элкарт (Любой банк)", "MBank (МБанк)", "Optima Bank", "Demir Bank", "RSK Bank", "KICB", "Bai-Tushum"],
+                "Azerbaijan": ["Visa / Mastercard (Любой банк)", "Kapital Bank", "Leobank", "ABB (Международный банк)", "Unibank", "Pasha Bank", "Rabitabank"],
+                "Kazakhstan": ["Любой банк (Kaspi, Halyk, Jusan)", "Kaspi Bank", "Halyk Bank", "Jusan Bank", "ForteBank", "BCC", "Eurasian Bank"],
+                "Armenia": ["Любой банк (ArCa / Visa / MC)", "Ameriabank", "Inecobank", "Converse Bank", "Evocabank", "AraratBank"],
+                "Georgia": ["Любой банк (Visa / MC)", "TBC Bank", "Bank of Georgia (BOG)", "Liberty Bank", "BasisBank", "Credo Bank"],
+                "Moldova": ["Любой банк (Visa / MC)", "maib", "Moldindconbank", "Victoriabank", "OTP Bank"],
+                "Europe": ["Любой банк (SEPA / Visa / MC)"],
+                "Worldwide": ["Любой банк (Visa / Mastercard)"]
             };
 
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
@@ -735,7 +759,7 @@ async def webapp_handler(request):
 
             window.onload = function() { 
                 if (localStorage.getItem('koro_country')) document.getElementById('country').value = localStorage.getItem('koro_country');
-                updateBanks(); 
+                updateBanks(true); 
                 if (localStorage.getItem('koro_bank')) document.getElementById('recipientBank').value = localStorage.getItem('koro_bank');
                 if (localStorage.getItem('koro_amount')) document.getElementById('amount').value = localStorage.getItem('koro_amount');
                 if (localStorage.getItem('koro_card')) document.getElementById('recCard').value = localStorage.getItem('koro_card');
@@ -768,11 +792,11 @@ async def webapp_handler(request):
             function setAmount(val) { haptic(); document.getElementById('amount').value = val; calculateParams(); }
 
             function onCountryChange() {
-                updateBanks();
+                updateBanks(false);
                 calculateParams();
             }
 
-            function updateBanks() {
+            function updateBanks(isInit) {
                 let countrySelectVal = document.getElementById('country').value;
                 let countryKey = countrySelectVal.split('|')[0];
                 let bankSelect = document.getElementById('recipientBank');
@@ -780,13 +804,18 @@ async def webapp_handler(request):
                 if (!bankSelect) return;
                 bankSelect.innerHTML = '';
                 
-                let availableBanks = banksData[countryKey] || ["Стандартный банк"];
+                let availableBanks = banksData[countryKey] || ["Любой банк"];
                 availableBanks.forEach(bank => {
                     let opt = document.createElement('option');
                     opt.value = bank;
                     opt.textContent = bank;
                     bankSelect.appendChild(opt);
                 });
+                
+                if(!isInit) {
+                    bankSelect.selectedIndex = 0;
+                    saveDraft();
+                }
             }
 
             function calculateParams() {
@@ -866,7 +895,8 @@ async def webapp_handler(request):
                 
                 if (enteredRub <= 0 || enteredRub > 25000) { tg.showAlert('Лимит перевода от 1 до 25 000 ₽'); return; }
                 if (card.length < 12) { tg.showAlert('Проверьте номер карты или счета получателя'); return; }
-                if (!document.getElementById('recName').value) { tg.showAlert('Укажите ФИО получателя'); return; }
+                let recNameInput = document.getElementById('recName').value.trim();
+                if (!recNameInput) { tg.showAlert('Укажите ФИО получателя'); return; }
                 if (!document.getElementById('termsCheck').checked) { tg.showAlert('Необходимо согласиться с Офертой'); return; }
 
                 currentOrderCode = 'KORO-' + Math.floor(1000 + Math.random() * 9000);
@@ -882,6 +912,10 @@ async def webapp_handler(request):
 
             async function confirmPayment() {
                 haptic();
+                let btn = document.getElementById('btnConfirmPay');
+                btn.disabled = true;
+                btn.textContent = 'Обработка...';
+                
                 let user = tg.initDataUnsafe?.user || {};
                 clearInterval(timerInterval);
                 try {
@@ -894,17 +928,25 @@ async def webapp_handler(request):
                             rub_amount: enteredRub + ' ₽',
                             local_received: calculatedLocal.toFixed(2),
                             currency: currentCurr,
-                            recipient_name: document.getElementById('recName').value,
+                            recipient_name: document.getElementById('recName').value.trim(),
                             recipient_card: document.getElementById('recCard').value,
                             transfer_comment: currentOrderCode,
                             username: user.username || 'Аноним', user_id: user.id || 0
                         })
                     });
                     let result = await response.json();
-                    if (!response.ok) { tg.showAlert(result.message || 'Ошибка сервера.'); location.reload(); return; }
+                    if (!response.ok) { 
+                        tg.showAlert(result.message || 'Ошибка сервера.'); 
+                        location.reload(); 
+                        return; 
+                    }
                     
                     switchTab('tab-success', null);
-                } catch (e) { tg.showAlert('Ошибка связи с сервером.'); }
+                } catch (e) { 
+                    tg.showAlert('Ошибка связи с сервером.'); 
+                    btn.disabled = false;
+                    btn.textContent = 'Я перевел(а) деньги';
+                }
             }
         </script>
     </body>
