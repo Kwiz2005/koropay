@@ -105,16 +105,9 @@ async def update_rates():
                         data = await resp.json()
                         rates = data.get("rates", {})
                         if rates:
-                            if "UZS" in rates: EXCHANGE_RATES["UZS"] = rates["UZS"] * COMMISSION_MARGIN
-                            if "TJS" in rates: EXCHANGE_RATES["TJS"] = rates["TJS"] * COMMISSION_MARGIN
-                            if "KGS" in rates: EXCHANGE_RATES["KGS"] = rates["KGS"] * COMMISSION_MARGIN
-                            if "AZN" in rates: EXCHANGE_RATES["AZN"] = rates["AZN"] * COMMISSION_MARGIN
-                            if "KZT" in rates: EXCHANGE_RATES["KZT"] = rates["KZT"] * COMMISSION_MARGIN
-                            if "AMD" in rates: EXCHANGE_RATES["AMD"] = rates["AMD"] * COMMISSION_MARGIN
-                            if "GEL" in rates: EXCHANGE_RATES["GEL"] = rates["GEL"] * COMMISSION_MARGIN
-                            if "MDL" in rates: EXCHANGE_RATES["MDL"] = rates["MDL"] * COMMISSION_MARGIN
-                            if "EUR" in rates: EXCHANGE_RATES["EUR"] = rates["EUR"] * COMMISSION_MARGIN
-                            if "USD" in rates: EXCHANGE_RATES["USD"] = rates["USD"] * COMMISSION_MARGIN
+                            for cur in EXCHANGE_RATES.keys():
+                                if cur in rates:
+                                    EXCHANGE_RATES[cur] = rates[cur] * COMMISSION_MARGIN
         except Exception as e:
             logging.error(f"Ошибка обновления курсов: {e}")
         await asyncio.sleep(3600)
@@ -323,6 +316,31 @@ async def api_history_handler(request):
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=400)
 
+async def api_support_handler(request):
+    try:
+        data = await request.json()
+        init_data = data.get("initData", "")
+        
+        if not validate_webapp_data(init_data, TOKEN):
+            return web.json_response({"status": "error", "message": "Взлом или неверная подпись WebApp"}, status=403)
+
+        user_id = data.get("user_id", 0)
+        username = data.get("username", "Аноним")
+        message_text = data.get("message", "")
+
+        support_msg = (
+            f"🆘 <b>ТИКЕТ В ПОДДЕРЖКУ (ИЗ WEBAPP)</b>\n\n"
+            f"👤 От: @{username} (ID: <code>{user_id}</code>)\n\n"
+            f"📝 <b>Сообщение клиента:</b>\n{message_text}"
+        )
+
+        if ADMIN_CHAT_ID:
+            await bot.send_message(ADMIN_CHAT_ID, support_msg, parse_mode="HTML")
+
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=400)
+
 async def api_order_handler(request):
     try:
         peername = request.transport.get_extra_info("peername")
@@ -514,8 +532,9 @@ async def webapp_handler(request):
             .input-group:last-child { margin-bottom: 0; }
             label { display: block; font-size: 11px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
             
-            input, select { width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }
-            input:focus, select:focus { border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }
+            input, select, textarea { width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }
+            input:focus, select:focus, textarea:focus { border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }
+            textarea { resize: none; font-size: 14px; }
             
             .quick-amounts { display: flex; gap: 8px; margin-top: 10px; }
             .quick-btn { flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }
@@ -675,13 +694,18 @@ async def webapp_handler(request):
 
             <div id="tab-support" class="screen">
                 <h2 style="margin-bottom: 20px; font-weight: 800;">Техподдержка</h2>
+                <div class="card-panel" style="margin-bottom: 16px;">
+                    <label>Написать в поддержку</label>
+                    <textarea id="supportMessage" rows="4" placeholder="Опишите вашу проблему с переводом..."></textarea>
+                    <button class="btn-primary" onclick="sendSupportMessage()" style="font-size: 14px; padding: 12px; margin-top: 12px;">Отправить обращение</button>
+                </div>
+                
                 <div class="card-panel" style="text-align: center; padding: 24px 18px;">
-                    <div style="font-size: 42px; margin-bottom: 12px;">💬</div>
-                    <h3 style="margin: 0 0 8px 0; font-size: 18px;">Возникли вопросы?</h3>
-                    <p style="color: var(--text-sec); font-size: 13px; line-height: 1.5; margin-bottom: 20px;">
-                        Наша служба поддержки работает 24/7. Напишите нам в Telegram, и мы поможем решить любой вопрос по переводу.
+                    <h3 style="margin: 0 0 8px 0; font-size: 16px;">Альтернативный способ</h3>
+                    <p style="color: var(--text-sec); font-size: 12px; line-height: 1.5; margin-bottom: 16px;">
+                        Вы также можете написать нашему оператору напрямую в Telegram.
                     </p>
-                    <button class="btn-primary" onclick="tg.openTelegramLink('https://t.me/koropay_support')">Написать в поддержку</button>
+                    <button class="btn-copy" onclick="tg.openTelegramLink('https://t.me/koropay_support')" style="margin-top:0;">Открыть чат с оператором</button>
                 </div>
             </div>
 
@@ -877,6 +901,31 @@ async def webapp_handler(request):
                 } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка или нет доступа</div>'; }
             }
 
+            async function sendSupportMessage() {
+                haptic();
+                let msg = document.getElementById('supportMessage').value.trim();
+                if(!msg) { tg.showAlert('Пожалуйста, опишите вашу проблему перед отправкой.'); return; }
+                
+                let user = tg.initDataUnsafe?.user || {};
+                try {
+                    let response = await fetch('/api/support', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            initData: tg.initData,
+                            message: msg,
+                            username: user.username || 'Аноним', user_id: user.id || 0
+                        })
+                    });
+                    let result = await response.json();
+                    if(result.status === 'success') {
+                        tg.showAlert('Ваше обращение успешно отправлено! Мы ответим вам в ближайшее время.');
+                        document.getElementById('supportMessage').value = '';
+                    } else {
+                        tg.showAlert('Произошла ошибка при отправке.');
+                    }
+                } catch(e) { tg.showAlert('Ошибка связи с сервером.'); }
+            }
+
             function startTimer(duration) {
                 let timer = duration, minutes, seconds;
                 clearInterval(timerInterval);
@@ -893,7 +942,14 @@ async def webapp_handler(request):
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
                 let card = document.getElementById('recCard').value.replace(/\s+/g, '');
                 
-                if (enteredRub <= 0 || enteredRub > 25000) { tg.showAlert('Лимит перевода от 1 до 25 000 ₽'); return; }
+                // ДИНАМИЧЕСКИЙ ЛИМИТ: Защита маржи для EUR и USD из-за фикс. комиссий Capitalist
+                let minLimit = (currentCurr === 'EUR' || currentCurr === 'USD') ? 5000 : 1000;
+                
+                if (enteredRub < minLimit || enteredRub > 25000) { 
+                    tg.showAlert(`Для данного направления сумма перевода должна быть от ${minLimit.toLocaleString('ru-RU')} до 25 000 ₽`); 
+                    return; 
+                }
+                
                 if (card.length < 12) { tg.showAlert('Проверьте номер карты или счета получателя'); return; }
                 let recNameInput = document.getElementById('recName').value.trim();
                 if (!recNameInput) { tg.showAlert('Укажите ФИО получателя'); return; }
@@ -961,6 +1017,7 @@ async def main():
     app = web.Application()
     app.router.add_get("/", webapp_handler)
     app.router.add_post("/api/order", api_order_handler)
+    app.router.add_post("/api/support", api_support_handler)
     app.router.add_get("/api/history", api_history_handler)
     
     runner = web.AppRunner(app)
