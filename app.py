@@ -69,7 +69,6 @@ async def init_db():
         await db.execute('''CREATE TABLE IF NOT EXISTS settings 
                      (key TEXT PRIMARY KEY, value TEXT)''')
         
-        # Добавляем реквизиты по умолчанию, если их нет
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('receive_card', '2200 3204 4647 4787')")
         await db.commit()
 
@@ -114,25 +113,20 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
     if not os.path.exists(font_path):
         urllib.request.urlretrieve("https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Medium.ttf", font_path)
     
-    # Настраиваем размеры шрифтов
     font_value = ImageFont.truetype(font_path, 18)
     font_label = ImageFont.truetype(font_path, 16)
     font_small = ImageFont.truetype(font_path, 14)
 
-    # Уменьшаем высоту холста для компактности
     img = Image.new('RGB', (600, 750), color='#05050C')
     draw = ImageDraw.Draw(img)
 
-    # Отрисовываем "Карточку" чека (Surface) с закругленными краями
     draw.rounded_rectangle([(20, 20), (580, 730)], radius=24, fill='#121322', outline='#1C1D33', width=2)
 
-    # Логотип
     logo_drawn = False
     if os.path.exists("logo.png"):
         try:
             logo = Image.open("logo.png").convert("RGBA")
             logo.thumbnail((80, 80))
-            # Центрируем логотип
             img.paste(logo, (260, 50), logo)
             logo_drawn = True
         except Exception as e:
@@ -142,17 +136,14 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
         font_logo = ImageFont.truetype(font_path, 36)
         draw.text((300, 90), "Koro Pay", font=font_logo, fill='#9667E0', anchor="mm")
 
-    # Заголовок чека
     draw.text((300, 160), "ОФИЦИАЛЬНЫЙ ЧЕК ПЕРЕВОДА", font=font_small, fill='#8A8E9E', anchor="mm")
     draw.line((60, 190, 540, 190), fill='#1C1D33', width=2)
 
     y = 220
-    spacing = 48 # Делаем строки чуть ближе друг к другу
+    spacing = 48 
     
-    # Автоматически делаем ФИО с заглавных букв (иванов иван -> Иванов Иван)
     formatted_name = name.title()
 
-    # Убрали эмодзи, чтобы не было "квадратиков" при рендере
     details = [
         ("Статус:", "УСПЕШНО (ДОСТАВЛЕН)", '#30D158'),
         ("Код транзакции:", tx_id, '#FFFFFF'),
@@ -177,6 +168,47 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
     bio.seek(0)
     return bio
 
+async def execute_capitalist_payout(card_number, amount, currency, tx_id):
+    API_KEY = "Y8ynGmekbgaSTxEqM2mvgGd9XxWJeafU"
+    API_SECRET = "PHmGJkeeM1TpWhJrGzYHt66wM5Z9fPga"
+    
+    auth_url = "https://api.capitalist.net/api/v1/token"
+    auth_data = {"login": API_KEY, "password": API_SECRET}
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(auth_url, json=auth_data) as auth_resp:
+                auth_result = await auth_resp.json()
+                if auth_resp.status != 200 or "data" not in auth_result:
+                    logging.error(f"Ошибка авторизации Capitalist: {auth_result}")
+                    return False
+                
+                token = auth_result["data"]["token"]
+                
+            payout_url = "https://api.capitalist.net/api/v1/payout"
+            headers = {"Authorization": f"Bearer {token}"}
+            
+            payout_payload = {
+                "account_type": "card",       
+                "account": card_number,       
+                "amount": amount,             
+                "currency": currency,         
+                "comment": f"Koro Pay {tx_id}"
+            }
+            
+            async with session.post(payout_url, json=payout_payload, headers=headers) as payout_resp:
+                payout_result = await payout_resp.json()
+                
+                if payout_resp.status == 200 and payout_result.get("code") == 0:
+                    logging.info(f"✅ Успешная выплата Capitalist: {tx_id} на {card_number}")
+                    return True
+                else:
+                    logging.error(f"❌ Ошибка выплаты Capitalist: {payout_result}")
+                    return False
+                    
+        except Exception as e:
+            logging.error(f"❌ Системная ошибка API Capitalist: {e}")
+            return False
 
 # --- BOT HANDLERS & CRM ---
 @dp.message(CommandStart())
@@ -268,7 +300,6 @@ async def api_history_handler(request):
         user_id = int(request.rel_url.query.get('user_id', 0))
         init_data = request.rel_url.query.get('initData', '')
         
-        # Защита: проверяем подпись Телеграм
         if not validate_webapp_data(init_data, TOKEN):
             return web.json_response({"status": "error", "message": "Unauthorized request"}, status=403)
 
@@ -301,7 +332,6 @@ async def api_order_handler(request):
         data = await request.json()
         init_data = data.get("initData", "")
         
-        # 🛡 КРИПТОГРАФИЧЕСКАЯ ЗАЩИТА ТРАНЗАКЦИЙ
         if not validate_webapp_data(init_data, TOKEN):
             return web.json_response({"status": "error", "message": "Взлом или неверная подпись WebApp"}, status=403)
 
@@ -371,25 +401,46 @@ async def process_approve(callback: types.CallbackQuery):
     async with aiosqlite.connect('koropay.db') as db:
         async with db.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=?", (tx_id,)) as cursor:
             tx_data = await cursor.fetchone()
-        await db.execute("UPDATE transfers SET status='SUCCESS' WHERE tx_id=?", (tx_id,))
-        await db.commit()
+            
+    if not tx_data:
+        await callback.answer("Транзакция не найдена!", show_alert=True)
+        return
 
-    await callback.message.edit_text(callback.message.text + f"\n\n✅ <b>ЗАВЕРШЕН И ЧЕК ОТПРАВЛЕН!</b>", parse_mode="HTML")
-    
+    msg_text = callback.message.text
     try:
-        if tx_data:
-            msg_text = callback.message.text
+        card = msg_text.split("Карта: ")[1].split("\n")[0].replace("<code>", "").replace("</code>", "").strip()
+    except IndexError:
+        card = ""
+        
+    local_amount = tx_data[1]
+    currency = tx_data[2]
+
+    await callback.message.edit_text(callback.message.text + "\n\n⏳ <b>ОТПРАВЛЯЮ СРЕДСТВА ЧЕРЕЗ CAPITALIST...</b>", parse_mode="HTML")
+
+    is_payout_success = await execute_capitalist_payout(card, local_amount, currency, tx_id)
+
+    if is_payout_success:
+        async with aiosqlite.connect('koropay.db') as db:
+            await db.execute("UPDATE transfers SET status='SUCCESS' WHERE tx_id=?", (tx_id,))
+            await db.commit()
+
+        await callback.message.edit_text(msg_text + f"\n\n✅ <b>ЗАВЕРШЕН И ЧЕК ОТПРАВЛЕН!</b>", parse_mode="HTML")
+        
+        try:
             bank = msg_text.split("Банк: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
-            card = msg_text.split("Карта: ")[1].split("\n")[0]
             name = msg_text.split("ФИО: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
             
             image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, bank, card)
             photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_{tx_id}.png")
             
             await bot.send_photo(target_user_id, photo=photo, caption=f"🎉 <b>Перевод успешно доставлен!</b>\n🆔 <code>{tx_id}</code>", parse_mode="HTML")
-    except Exception as e: 
-        logging.error(f"Ошибка чека: {e}")
-    await callback.answer("Успешно!")
+        except Exception as e: 
+            logging.error(f"Ошибка чека: {e}")
+            
+        await callback.answer("Успешно отправлено!")
+    else:
+        await callback.message.edit_text(msg_text + "\n\n❌ <b>ОШИБКА API CAPITALIST. ПЕРЕВОД НЕ ВЫПОЛНЕН.</b>", parse_mode="HTML")
+        await callback.answer("Ошибка шлюза. Проверь логи.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("rej_"))
 async def process_reject(callback: types.CallbackQuery):
@@ -837,7 +888,7 @@ async def webapp_handler(request):
                     let response = await fetch('/api/order', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            initData: tg.initData, // КРИПТОГРАФИЧЕСКАЯ ПОДПИСЬ ТЕЛЕГРАМ
+                            initData: tg.initData,
                             country: document.getElementById('country').value.split('|')[0],
                             recipient_bank: document.getElementById('recipientBank').value,
                             rub_amount: enteredRub + ' ₽',
