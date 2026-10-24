@@ -35,7 +35,6 @@ WEBAPP_URL = "https://koropay-en5x.onrender.com"
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
-# Базовые курсы для всех стран, они будут обновляться через API
 EXCHANGE_RATES = {
     "UZS": 135.00, "TJS": 0.115, "KGS": 0.95, "AZN": 0.018,
     "KZT": 5.15, "AMD": 4.15, "GEL": 0.028, "MDL": 0.18,
@@ -123,7 +122,6 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
 
     img = Image.new('RGB', (600, 750), color='#05050C')
     draw = ImageDraw.Draw(img)
-
     draw.rounded_rectangle([(20, 20), (580, 730)], radius=24, fill='#121322', outline='#1C1D33', width=2)
 
     logo_drawn = False
@@ -134,7 +132,7 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
             img.paste(logo, (260, 50), logo)
             logo_drawn = True
         except Exception as e:
-            logging.error(f"Не удалось наложить логотип на чек: {e}")
+            pass
 
     if not logo_drawn:
         font_logo = ImageFont.truetype(font_path, 36)
@@ -145,7 +143,6 @@ def generate_receipt_image(tx_id, rub, local, currency, name, bank, card):
 
     y = 220
     spacing = 48 
-    
     formatted_name = name.title()
 
     details = [
@@ -183,15 +180,11 @@ async def execute_capitalist_payout(card_number, amount, currency, tx_id):
         try:
             async with session.post(auth_url, json=auth_data) as auth_resp:
                 auth_result = await auth_resp.json()
-                if auth_resp.status != 200 or "data" not in auth_result:
-                    logging.error(f"Ошибка авторизации Capitalist: {auth_result}")
-                    return False
-                
+                if auth_resp.status != 200 or "data" not in auth_result: return False
                 token = auth_result["data"]["token"]
                 
             payout_url = "https://api.capitalist.net/api/v1/payout"
             headers = {"Authorization": f"Bearer {token}"}
-            
             payout_payload = {
                 "account_type": "card",       
                 "account": card_number,       
@@ -202,17 +195,11 @@ async def execute_capitalist_payout(card_number, amount, currency, tx_id):
             
             async with session.post(payout_url, json=payout_payload, headers=headers) as payout_resp:
                 payout_result = await payout_resp.json()
-                
                 if payout_resp.status == 200 and payout_result.get("code") == 0:
-                    logging.info(f"✅ Успешная выплата Capitalist: {tx_id} на {card_number}")
+                    logging.info(f"✅ Успешная выплата Capitalist: {tx_id}")
                     return True
-                else:
-                    logging.error(f"❌ Ошибка выплаты Capitalist: {payout_result}")
-                    return False
-                    
-        except Exception as e:
-            logging.error(f"❌ Системная ошибка API Capitalist: {e}")
-            return False
+                return False
+        except Exception as e: return False
 
 # --- BOT HANDLERS & CRM ---
 @dp.message(CommandStart())
@@ -250,7 +237,7 @@ async def cmd_setcard(message: types.Message):
     async with aiosqlite.connect('koropay.db') as db:
         await db.execute("UPDATE settings SET value=? WHERE key='receive_card'", (new_card,))
         await db.commit()
-    await message.answer(f"✅ Реквизиты для приема платежей успешно обновлены на:\n<code>{new_card}</code>", parse_mode="HTML")
+    await message.answer(f"✅ Реквизиты обновлены:\n<code>{new_card}</code>", parse_mode="HTML")
 
 @dp.message(Command("user"))
 async def cmd_user(message: types.Message):
@@ -263,17 +250,22 @@ async def cmd_user(message: types.Message):
             return
             
         async with aiosqlite.connect('koropay.db') as db:
-            async with db.execute("SELECT COUNT(*), status FROM transfers WHERE user_id=? GROUP BY status", (target_id,)) as cursor:
+            async with db.execute("SELECT COUNT(*), status, SUM(CAST(REPLACE(rub_amount, ' ₽', '') AS REAL)) FROM transfers WHERE user_id=? GROUP BY status", (target_id,)) as cursor:
                 stats = await cursor.fetchall()
                 
-        stat_text = "\n".join([f"{s[1]}: {s[0]} шт." for s in stats]) if stats else "Нет переводов"
+        stat_text = ""
+        ltv = 0.0
+        for s in stats:
+            stat_text += f"{s[1]}: {s[0]} шт.\n"
+            if s[1] == 'SUCCESS': ltv = s[2] or 0.0
+            
         ban_status = "ДА 🔴" if u_data[3] else "НЕТ 🟢"
         
         await message.answer(
-            f"👤 <b>Досье клиента:</b> <code>{target_id}</code> (@{u_data[1]})\n"
-            f"Страйков безопасности: {u_data[2]}/3\n"
-            f"Бан: {ban_status}\n\n"
-            f"<b>Статистика операций:</b>\n{stat_text}",
+            f"👤 <b>CRM Досье:</b> <code>{target_id}</code> (@{u_data[1]})\n"
+            f"Бан: {ban_status} | Страйков: {u_data[2]}/3\n"
+            f"💎 <b>LTV (Успешные рубли):</b> {ltv:,.2f} ₽\n\n"
+            f"<b>Статистика:</b>\n{stat_text if stat_text else 'Нет операций'}",
             parse_mode="HTML"
         )
     except Exception:
@@ -282,19 +274,13 @@ async def cmd_user(message: types.Message):
 @dp.message(Command("export"))
 async def cmd_export(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID: return
-    
     csv_file = StringIO()
     writer = csv.writer(csv_file)
     writer.writerow(["TX_ID", "USER_ID", "COUNTRY", "RUB", "LOCAL", "CURRENCY", "STATUS", "DATE"])
-    
     async with aiosqlite.connect('koropay.db') as db:
         async with db.execute("SELECT * FROM transfers ORDER BY ROWID DESC") as cursor:
-            rows = await cursor.fetchall()
-            for row in rows:
-                writer.writerow(row)
-                
-    bio = BytesIO(csv_file.getvalue().encode('utf-8'))
-    file = BufferedInputFile(bio.getvalue(), filename=f"KoroPay_Export_{datetime.now().strftime('%Y%m%d')}.csv")
+            for row in await cursor.fetchall(): writer.writerow(row)
+    file = BufferedInputFile(BytesIO(csv_file.getvalue().encode('utf-8')).getvalue(), filename=f"KoroPay_Export_{datetime.now().strftime('%Y%m%d')}.csv")
     await message.answer_document(document=file, caption="📊 Реестр всех переводов выгружен.")
 
 
@@ -303,9 +289,7 @@ async def api_history_handler(request):
     try:
         user_id = int(request.rel_url.query.get('user_id', 0))
         init_data = request.rel_url.query.get('initData', '')
-        
-        if not validate_webapp_data(init_data, TOKEN):
-            return web.json_response({"status": "error", "message": "Unauthorized request"}, status=403)
+        if not validate_webapp_data(init_data, TOKEN): return web.json_response({"status": "error"}, status=403)
 
         async with aiosqlite.connect('koropay.db') as db:
             async with db.execute("SELECT tx_id, country, rub_amount, local_amount, currency, status FROM transfers WHERE user_id=? ORDER BY ROWID DESC LIMIT 15", (user_id,)) as cursor:
@@ -313,33 +297,41 @@ async def api_history_handler(request):
         
         result = [{"tx_id": tx[0], "country": tx[1], "rub": tx[2], "local": tx[3], "currency": tx[4], "status": tx[5]} for tx in history]
         return web.json_response({"status": "success", "data": result})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=400)
+    except Exception as e: return web.json_response({"status": "error", "message": str(e)}, status=400)
+
+async def api_request_receipt(request):
+    try:
+        data = await request.json()
+        if not validate_webapp_data(data.get("initData", ""), TOKEN): return web.json_response({"status": "error"}, status=403)
+        tx_id, user_id = data.get("tx_id"), data.get("user_id")
+        
+        # Получаем данные из истории
+        async with aiosqlite.connect('koropay.db') as db:
+            async with db.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=? AND status='SUCCESS'", (tx_id,)) as cursor:
+                tx_data = await cursor.fetchone()
+                
+        if not tx_data: return web.json_response({"status": "error", "message": "Чек недоступен или транзакция не успешна"})
+        
+        image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], "Клиент Сервиса", "Банк Получателя", "**** **** **** ****")
+        photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_{tx_id}.png")
+        await bot.send_photo(user_id, photo=photo, caption=f"📄 <b>Дубликат чека</b>\n🆔 <code>{tx_id}</code>", parse_mode="HTML")
+        return web.json_response({"status": "success"})
+    except Exception as e: return web.json_response({"status": "error"}, status=400)
 
 async def api_support_handler(request):
     try:
         data = await request.json()
-        init_data = data.get("initData", "")
-        
-        if not validate_webapp_data(init_data, TOKEN):
-            return web.json_response({"status": "error", "message": "Взлом или неверная подпись WebApp"}, status=403)
-
-        user_id = data.get("user_id", 0)
-        username = data.get("username", "Аноним")
-        message_text = data.get("message", "")
+        if not validate_webapp_data(data.get("initData", ""), TOKEN): return web.json_response({"status": "error"}, status=403)
+        user_id, username, message_text = data.get("user_id"), data.get("username", "Аноним"), data.get("message", "")
 
         support_msg = (
             f"🆘 <b>ТИКЕТ В ПОДДЕРЖКУ (ИЗ WEBAPP)</b>\n\n"
             f"👤 От: @{username} (ID: <code>{user_id}</code>)\n\n"
             f"📝 <b>Сообщение клиента:</b>\n{message_text}"
         )
-
-        if ADMIN_CHAT_ID:
-            await bot.send_message(ADMIN_CHAT_ID, support_msg, parse_mode="HTML")
-
+        if ADMIN_CHAT_ID: await bot.send_message(ADMIN_CHAT_ID, support_msg, parse_mode="HTML")
         return web.json_response({"status": "success"})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=400)
+    except Exception as e: return web.json_response({"status": "error"}, status=400)
 
 async def api_order_handler(request):
     try:
@@ -350,28 +342,18 @@ async def api_order_handler(request):
         if client_ip in api_ip_cooldowns:
             last_time, count = api_ip_cooldowns[client_ip]
             if current_time - last_time < 60:
-                if count >= 3:
-                    return web.json_response({"status": "error", "message": "Слишком много запросов."}, status=429)
+                if count >= 3: return web.json_response({"status": "error", "message": "Слишком много запросов."}, status=429)
                 api_ip_cooldowns[client_ip] = (last_time, count + 1)
-            else:
-                api_ip_cooldowns[client_ip] = (current_time, 1)
-        else:
-            api_ip_cooldowns[client_ip] = (current_time, 1)
+            else: api_ip_cooldowns[client_ip] = (current_time, 1)
+        else: api_ip_cooldowns[client_ip] = (current_time, 1)
 
         data = await request.json()
         init_data = data.get("initData", "")
-        
-        if not validate_webapp_data(init_data, TOKEN):
-            return web.json_response({"status": "error", "message": "Взлом или неверная подпись WebApp"}, status=403)
+        if not validate_webapp_data(init_data, TOKEN): return web.json_response({"status": "error"}, status=403)
 
         user_id = data.get("user_id", 0)
-        if user_id in user_cooldowns and current_time - user_cooldowns[user_id] < 60:
-            return web.json_response({"status": "error", "message": "Подождите минуту."}, status=400)
-        user_cooldowns[user_id] = current_time
-
         user_data = await get_user(user_id)
-        if user_data and user_data[3] == 1:
-            return web.json_response({"status": "error", "message": "Аккаунт заблокирован."}, status=403)
+        if user_data and user_data[3] == 1: return web.json_response({"status": "error", "message": "Аккаунт заблокирован."}, status=403)
 
         country = data.get("country", "СНГ")
         rub_amount = data.get("rub_amount", "0")
@@ -380,9 +362,8 @@ async def api_order_handler(request):
         recipient_bank = data.get("recipient_bank", "Не указан")
         recipient_name = data.get("recipient_name", "Не указано")
         recipient_card = data.get("recipient_card", "Не указано")
-        transfer_comment = data.get("transfer_comment", "Нет комментария")
-        user_name = data.get("username", "Аноним")
-        tx_id = transfer_comment
+        tx_id = data.get("transfer_comment", "Нет комментария")
+        promo = data.get("promo", "Нет")
 
         async with aiosqlite.connect("koropay.db") as db:
             await db.execute(
@@ -403,50 +384,37 @@ async def api_order_handler(request):
 
         admin_message = (
             f"🚨 <b>НОВАЯ ЗАЯВКА!</b>\n\n"
-            f"👤 Клиент: @{user_name} (ID: <code>{user_id}</code>)\n"
-            f"🆔 Транзакция: <code>{tx_id}</code>\n\n"
+            f"👤 Клиент: @{data.get('username', 'Аноним')} (ID: <code>{user_id}</code>)\n"
+            f"🆔 Транзакция: <code>{tx_id}</code>\n"
+            f"🎟 Промокод: <b>{promo}</b>\n\n"
             f"1️⃣ Проверь поступление <b>{rub_amount}</b> на реквизиты:\n<code>{active_card}</code>\n"
             f"2️⃣ Переведи <b>{local_received} {currency}</b>:\n"
             f"   🏦 Банк: <b>{recipient_bank}</b>\n"
             f"   💳 Карта: <code>{recipient_card}</code>\n"
             f"   👤 ФИО: <b>{recipient_name}</b>\n"
         )
-
-        if ADMIN_CHAT_ID:
-            await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb)
-
+        if ADMIN_CHAT_ID: await bot.send_message(ADMIN_CHAT_ID, admin_message, parse_mode="HTML", reply_markup=admin_kb)
         return web.json_response({"status": "success", "tx_id": tx_id})
-    except Exception as e:
-        logging.error(f"Ошибка API: {e}")
-        return web.json_response({"status": "error", "message": str(e)}, status=400)
+    except Exception as e: return web.json_response({"status": "error", "message": str(e)}, status=400)
 
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def process_approve(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    target_user_id = int(parts[1])
-    tx_id = parts[2]
+    target_user_id, tx_id = int(parts[1]), parts[2]
 
     async with aiosqlite.connect('koropay.db') as db:
         async with db.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=?", (tx_id,)) as cursor:
             tx_data = await cursor.fetchone()
             
-    if not tx_data:
-        await callback.answer("Транзакция не найдена!", show_alert=True)
-        return
+    if not tx_data: return await callback.answer("Транзакция не найдена!", show_alert=True)
 
     msg_text = callback.message.text
-    try:
-        card = msg_text.split("Карта: ")[1].split("\n")[0].replace("<code>", "").replace("</code>", "").strip()
-    except IndexError:
-        card = ""
-        
-    local_amount = tx_data[1]
-    currency = tx_data[2]
+    try: card = msg_text.split("Карта: ")[1].split("\n")[0].replace("<code>", "").replace("</code>", "").strip()
+    except: card = ""
 
     await callback.message.edit_text(callback.message.text + "\n\n⏳ <b>ОТПРАВЛЯЮ СРЕДСТВА ЧЕРЕЗ CAPITALIST...</b>", parse_mode="HTML")
-
-    is_payout_success = await execute_capitalist_payout(card, local_amount, currency, tx_id)
+    is_payout_success = await execute_capitalist_payout(card, tx_data[1], tx_data[2], tx_id)
 
     if is_payout_success:
         async with aiosqlite.connect('koropay.db') as db:
@@ -454,18 +422,12 @@ async def process_approve(callback: types.CallbackQuery):
             await db.commit()
 
         await callback.message.edit_text(msg_text + f"\n\n✅ <b>ЗАВЕРШЕН И ЧЕК ОТПРАВЛЕН!</b>", parse_mode="HTML")
-        
         try:
             bank = msg_text.split("Банк: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
             name = msg_text.split("ФИО: ")[1].split("\n")[0].replace("<b>", "").replace("</b>", "")
-            
             image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], name, bank, card)
-            photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_{tx_id}.png")
-            
-            await bot.send_photo(target_user_id, photo=photo, caption=f"🎉 <b>Перевод успешно доставлен!</b>\n🆔 <code>{tx_id}</code>", parse_mode="HTML")
-        except Exception as e: 
-            logging.error(f"Ошибка чека: {e}")
-            
+            await bot.send_photo(target_user_id, photo=BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_{tx_id}.png"), caption=f"🎉 <b>Перевод успешно доставлен!</b>\n🆔 <code>{tx_id}</code>", parse_mode="HTML")
+        except Exception: pass
         await callback.answer("Успешно отправлено!")
     else:
         await callback.message.edit_text(msg_text + "\n\n❌ <b>ОШИБКА API CAPITALIST. ПЕРЕВОД НЕ ВЫПОЛНЕН.</b>", parse_mode="HTML")
@@ -474,10 +436,7 @@ async def process_approve(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("rej_"))
 async def process_reject(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    reason_type = parts[1]
-    target_user_id = int(parts[2])
-    tx_id = parts[3]
-
+    reason_type, target_user_id, tx_id = parts[1], int(parts[2]), parts[3]
     reason_text = "нарушение правил"
     if reason_type == "fake": reason_text = "платеж не поступил"
     elif reason_type == "aml": reason_text = "сработал AML-контроль"
@@ -488,14 +447,12 @@ async def process_reject(callback: types.CallbackQuery):
     await add_strike(target_user_id)
 
     await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ОТМЕНЕНО: {reason_text.upper()}</b>", parse_mode="HTML")
-    try:
-        await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> отменен.\nПричина: {reason_text}.", parse_mode="HTML")
+    try: await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> отменен.\nПричина: {reason_text}.", parse_mode="HTML")
     except: pass
     await callback.answer("Отклонено.")
 
 async def webapp_handler(request):
     current_card = await get_active_card()
-    
     html_content = """
     <!DOCTYPE html>
     <html lang="ru">
@@ -507,10 +464,15 @@ async def webapp_handler(request):
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
         <style>
             :root {
-                --bg: #05050C; --surface: #121322; --surface-hover: #1C1D33;
-                --primary: #9667E0; --primary-light: #7C83FD;
+                --bg: var(--tg-theme-bg-color, #05050C); 
+                --surface: var(--tg-theme-secondary-bg-color, #121322); 
+                --surface-hover: rgba(150, 103, 224, 0.1);
+                --primary: var(--tg-theme-button-color, #9667E0); 
+                --primary-light: #7C83FD;
                 --primary-grad: linear-gradient(135deg, #7C83FD 0%, #9667E0 100%);
-                --text: #FFFFFF; --text-sec: #8A8E9E; --border: rgba(124, 131, 253, 0.15);
+                --text: var(--tg-theme-text-color, #FFFFFF); 
+                --text-sec: var(--tg-theme-hint-color, #8A8E9E); 
+                --border: rgba(124, 131, 253, 0.15);
                 --success: #30D158; --danger: #FF453A; --warning: #FF9F0A;
             }
             * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -527,18 +489,24 @@ async def webapp_handler(request):
             .screen.active { display: block; }
             @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-            .card-panel { background: var(--surface); border-radius: 16px; padding: 18px; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+            .card-panel { background: var(--surface); border-radius: 16px; padding: 18px; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
             .input-group { margin-bottom: 16px; }
             .input-group:last-child { margin-bottom: 0; }
             label { display: block; font-size: 11px; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
             
-            input, select, textarea { width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }
-            input:focus, select:focus, textarea:focus { border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05); }
-            textarea { resize: none; font-size: 14px; }
+            input, select, textarea { width: 100%; padding: 14px; background: rgba(124, 131, 253, 0.03); border: 1px solid var(--border); border-radius: 12px; color: var(--text); font-size: 16px; font-family: 'Inter', sans-serif; transition: border-color 0.2s; outline: none; font-weight: 500; }
+            input:focus, select:focus, textarea:focus { border-color: var(--primary); background: rgba(124, 131, 253, 0.05); }
+            
+            .address-book { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px; scrollbar-width: none; }
+            .address-book::-webkit-scrollbar { display: none; }
+            .address-chip { flex-shrink: 0; padding: 8px 12px; background: var(--surface-hover); border: 1px solid var(--border); border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--primary); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+            
+            .two-way-calc { display: flex; gap: 10px; align-items: center; }
+            .two-way-calc .calc-col { flex: 1; }
+            .two-way-calc .calc-eq { font-size: 20px; color: var(--text-sec); font-weight: 600; margin-top: 15px;}
             
             .quick-amounts { display: flex; gap: 8px; margin-top: 10px; }
-            .quick-btn { flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary-light); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }
-            .quick-btn:active { background: var(--primary); color: #fff; }
+            .quick-btn { flex: 1; padding: 10px 0; background: var(--surface-hover); color: var(--primary); border: 1px solid var(--border); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; transition: 0.2s; }
             
             .receipt-row { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 10px; color: var(--text-sec); }
             .receipt-row.total { font-size: 18px; font-weight: 800; color: var(--text); margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--border); margin-bottom: 0; }
@@ -546,15 +514,16 @@ async def webapp_handler(request):
             .btn-primary { width: 100%; padding: 16px; background: var(--primary-grad); color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s; }
             .btn-primary:active { opacity: 0.8; }
             .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-            .btn-copy { background: var(--surface-hover); color: var(--primary-light); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }
+            .btn-secondary { background: transparent; color: var(--primary); padding: 8px 12px; border: 1px solid var(--primary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+            .btn-copy { background: var(--surface-hover); color: var(--primary); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }
 
             .checkbox-wrapper { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }
             .checkbox-wrapper input { width: 22px; height: 22px; accent-color: var(--primary); }
-            .link { color: var(--primary-light); text-decoration: none; font-weight: 600; cursor: pointer; }
+            .link { color: var(--primary); text-decoration: none; font-weight: 600; cursor: pointer; }
             
-            .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(5, 5, 12, 0.9); backdrop-filter: blur(10px); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }
+            .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--bg); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }
             .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; }
-            .nav-item.active { color: var(--primary-light); }
+            .nav-item.active { color: var(--primary); }
             .nav-icon { font-size: 22px; margin-bottom: 4px; }
             
             .history-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
@@ -572,7 +541,7 @@ async def webapp_handler(request):
             .modal-content { background: var(--surface); width: 100%; border-radius: 24px 24px 0 0; padding: 24px; max-height: 85vh; overflow-y: auto; animation: slideUp 0.3s; border-top: 1px solid var(--border); }
             @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
             .modal-close { width: 40px; height: 5px; background: var(--border); border-radius: 3px; margin: 0 auto 20px; }
-            .legal-text h3 { margin-top: 0; font-size: 20px; font-weight: 800; }
+            .legal-text h3 { margin-top: 0; font-size: 20px; font-weight: 800; color: var(--text); }
             .legal-text p { font-size: 13px; color: var(--text-sec); line-height: 1.6; margin-bottom: 12px; }
         </style>
     </head>
@@ -589,6 +558,11 @@ async def webapp_handler(request):
 
         <div class="content">
             <div id="tab-transfer" class="screen active">
+                
+                <div class="address-book" id="addressBook" style="display: none;">
+                    <!-- Шаблоны получателей будут здесь -->
+                </div>
+
                 <div class="card-panel">
                     <div class="input-group">
                         <label>Страна зачисления</label>
@@ -609,15 +583,23 @@ async def webapp_handler(request):
                         <label>Банк получателя</label>
                         <select id="recipientBank" onchange="saveDraft()"></select>
                     </div>
-                    <div class="input-group">
-                        <label>Сумма перевода (₽)</label>
-                        <input type="number" id="amount" placeholder="0" oninput="calculateParams()">
-                        <div class="quick-amounts">
-                            <button class="quick-btn" onclick="setAmount(1000)">1 000</button>
-                            <button class="quick-btn" onclick="setAmount(5000)">5 000</button>
-                            <button class="quick-btn" onclick="setAmount(15000)">15 000</button>
-                            <button class="quick-btn" onclick="setAmount(25000)">MAX</button>
+                    
+                    <div class="two-way-calc">
+                        <div class="calc-col">
+                            <label>Спишем (₽)</label>
+                            <input type="number" id="amount" placeholder="0" oninput="calcMode='rub'; calculateParams();">
                         </div>
+                        <div class="calc-eq">≈</div>
+                        <div class="calc-col">
+                            <label>Зачислим (<span id="localCurrLabel">UZS</span>)</label>
+                            <input type="number" id="amountLocal" placeholder="0" oninput="calcMode='local'; calculateParams();">
+                        </div>
+                    </div>
+                    <div class="quick-amounts">
+                        <button class="quick-btn" onclick="setAmount(1000)">1 000 ₽</button>
+                        <button class="quick-btn" onclick="setAmount(5000)">5 000 ₽</button>
+                        <button class="quick-btn" onclick="setAmount(15000)">15 000 ₽</button>
+                        <button class="quick-btn" onclick="setAmount(25000)">MAX</button>
                     </div>
                 </div>
 
@@ -633,17 +615,17 @@ async def webapp_handler(request):
                 </div>
 
                 <div class="card-panel">
-                    <div class="receipt-row">
-                        <span>Актуальный курс</span>
-                        <span id="rateDisplay" style="color: var(--primary-light); font-weight: 600;">0.00</span>
+                    <div class="input-group" style="margin-bottom: 12px;">
+                        <label>Промокод (Если есть)</label>
+                        <input type="text" id="promoCode" placeholder="Например: KORO2026" oninput="calculateParams()" style="text-transform: uppercase;">
                     </div>
                     <div class="receipt-row">
-                        <span>Комиссия за перевод</span>
-                        <span style="color: var(--success); font-weight: 600;">0 ₽</span>
+                        <span>Актуальный курс <span id="promoBadge" style="display:none; color:var(--success); font-size:10px;">(БЕЗ КОМИССИИ)</span></span>
+                        <span id="rateDisplay" style="color: var(--primary); font-weight: 600;">0.00</span>
                     </div>
                     <div class="receipt-row total">
                         <span>Сумма к зачислению</span>
-                        <span id="totalLocal" style="color: var(--primary-light);">0.00 UZS</span>
+                        <span id="totalLocal" style="color: var(--primary);">0.00 UZS</span>
                     </div>
                 </div>
 
@@ -659,19 +641,19 @@ async def webapp_handler(request):
 
             <div id="tab-payment" class="screen">
                 <div style="text-align: center; margin-bottom: 24px;">
-                    <div style="font-size: 48px; margin-bottom: 10px; filter: drop-shadow(0 0 15px var(--primary-light));">🛡</div>
+                    <div style="font-size: 48px; margin-bottom: 10px;">🛡</div>
                     <h2 style="margin:0; font-weight: 800;">Безопасный шлюз</h2>
                     <div style="color: var(--warning); font-weight: 700; margin-top: 10px; font-size: 18px;" id="timerDisplay">15:00</div>
                 </div>
 
                 <div class="card-panel" style="text-align: center;">
                     <label style="text-align: center;">К оплате</label>
-                    <div id="payRubSum" style="font-size: 32px; font-weight: 800; color: #fff;">0 ₽</div>
+                    <div id="payRubSum" style="font-size: 32px; font-weight: 800; color: var(--text);">0 ₽</div>
                 </div>
 
-                <div class="card-panel" style="border-color: var(--primary-light); background: rgba(124, 131, 253, 0.05);">
-                    <label style="color: var(--primary-light);">Обязательный комментарий</label>
-                    <div id="transferCommentText" style="font-size: 24px; font-weight: 800; color: #fff;">KORO-0000</div>
+                <div class="card-panel" style="border-color: var(--primary); background: var(--surface-hover);">
+                    <label style="color: var(--primary);">Обязательный комментарий</label>
+                    <div id="transferCommentText" style="font-size: 24px; font-weight: 800; color: var(--text);">KORO-0000</div>
                     <button class="btn-copy" id="btnCopyComment" onclick="copyText(currentOrderCode, 'btnCopyComment')" style="background: var(--primary-grad); color: #fff; border: none;">Скопировать код</button>
                 </div>
 
@@ -682,7 +664,7 @@ async def webapp_handler(request):
                     <button class="btn-copy" id="btnCopyCard" onclick="copyText('ACTUAL_SYSTEM_CARD', 'btnCopyCard')">Скопировать номер карты</button>
                 </div>
 
-                <button id="btnConfirmPay" class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.3);">Я перевел(а) деньги</button>
+                <button id="btnConfirmPay" class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.2);">Я перевел(а) деньги</button>
             </div>
 
             <div id="tab-history" class="screen">
@@ -711,9 +693,19 @@ async def webapp_handler(request):
 
             <div id="tab-profile" class="screen">
                 <h2 style="margin-bottom: 20px; font-weight: 800;">Мой Профиль</h2>
+                
+                <div class="card-panel">
+                    <label style="margin-bottom: 12px;">🎁 Пригласить друга</label>
+                    <p style="font-size: 12px; color: var(--text-sec); line-height: 1.4; margin: 0 0 12px 0;">Поделитесь ссылкой с друзьями. Они получат отличный курс, а вы — бонусные рубли!</p>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="refLink" readonly style="font-size: 12px; padding: 10px;">
+                        <button class="btn-secondary" id="btnCopyRef" onclick="copyText(document.getElementById('refLink').value, 'btnCopyRef')" style="width: auto;">Копия</button>
+                    </div>
+                </div>
+
                 <div class="card-panel">
                     <div class="receipt-row" style="padding: 14px 0; border-bottom: 1px solid var(--border); margin:0; cursor:pointer;" onclick="openModal('ofertaModal')">
-                        <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary-light);">›</span>
+                        <span style="font-weight:600; color:var(--text);">📄 Договор Оферты</span><span style="color:var(--primary);">›</span>
                     </div>
                     <div class="receipt-row" style="padding: 14px 0; margin:0;">
                         <span style="font-weight:600; color:var(--text);">Версия системы</span><span style="color:var(--text-sec); font-family:monospace;">Koro Pay v1.0.0.0</span>
@@ -722,7 +714,7 @@ async def webapp_handler(request):
             </div>
 
             <div id="tab-success" class="screen" style="text-align: center; padding-top: 40px;">
-                <div style="font-size: 70px; margin-bottom: 20px; filter: drop-shadow(0 0 20px var(--primary-light));">⏳</div>
+                <div style="font-size: 70px; margin-bottom: 20px;">⏳</div>
                 <h2 style="margin-bottom: 12px; font-weight: 800;">Ожидание перевода</h2>
                 <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px; background: var(--surface); padding: 20px; border-radius: 16px; border: 1px solid var(--border);">
                     Мы проверяем поступление вашего платежа. <br><br>
@@ -772,6 +764,35 @@ async def webapp_handler(request):
             };
 
             let currentMultiplier = 135, currentCurr = 'UZS', enteredRub = 0, calculatedLocal = 0, currentOrderCode = '', timerInterval;
+            let calcMode = 'rub'; 
+            let savedRecipients = JSON.parse(localStorage.getItem('koro_recipients') || '[]');
+
+            function initAddressBook() {
+                let ab = document.getElementById('addressBook');
+                if(savedRecipients.length > 0) {
+                    ab.style.display = 'flex';
+                    ab.innerHTML = '';
+                    savedRecipients.forEach((rec, idx) => {
+                        ab.innerHTML += `<div class="address-chip" onclick="applyTemplate(${idx})">👤 ${rec.name.split(' ')[0]}</div>`;
+                    });
+                }
+            }
+
+            function applyTemplate(idx) {
+                haptic();
+                let rec = savedRecipients[idx];
+                document.getElementById('recName').value = rec.name;
+                document.getElementById('recCard').value = rec.card;
+                saveDraft();
+            }
+
+            function saveNewRecipient(name, card, bank) {
+                if(!savedRecipients.find(r => r.card === card)) {
+                    savedRecipients.unshift({name, card, bank});
+                    if(savedRecipients.length > 5) savedRecipients.pop();
+                    localStorage.setItem('koro_recipients', JSON.stringify(savedRecipients));
+                }
+            }
 
             function saveDraft() {
                 localStorage.setItem('koro_country', document.getElementById('country').value);
@@ -782,6 +803,8 @@ async def webapp_handler(request):
             }
 
             window.onload = function() { 
+                document.getElementById('refLink').value = `https://t.me/koropay_bot?start=${tg.initDataUnsafe?.user?.id || 'ref'}`;
+                initAddressBook();
                 if (localStorage.getItem('koro_country')) document.getElementById('country').value = localStorage.getItem('koro_country');
                 updateBanks(true); 
                 if (localStorage.getItem('koro_bank')) document.getElementById('recipientBank').value = localStorage.getItem('koro_bank');
@@ -813,18 +836,14 @@ async def webapp_handler(request):
                 saveDraft();
             }
 
-            function setAmount(val) { haptic(); document.getElementById('amount').value = val; calculateParams(); }
+            function setAmount(val) { haptic(); calcMode = 'rub'; document.getElementById('amount').value = val; calculateParams(); }
 
-            function onCountryChange() {
-                updateBanks(false);
-                calculateParams();
-            }
+            function onCountryChange() { updateBanks(false); calculateParams(); }
 
             function updateBanks(isInit) {
                 let countrySelectVal = document.getElementById('country').value;
                 let countryKey = countrySelectVal.split('|')[0];
                 let bankSelect = document.getElementById('recipientBank');
-                
                 if (!bankSelect) return;
                 bankSelect.innerHTML = '';
                 
@@ -835,25 +854,35 @@ async def webapp_handler(request):
                     opt.textContent = bank;
                     bankSelect.appendChild(opt);
                 });
-                
-                if(!isInit) {
-                    bankSelect.selectedIndex = 0;
-                    saveDraft();
-                }
+                if(!isInit) { bankSelect.selectedIndex = 0; saveDraft(); }
             }
 
             function calculateParams() {
                 let val = document.getElementById('country').value.split('|');
                 currentCurr = val[1]; currentMultiplier = parseFloat(val[2]);
+                document.getElementById('localCurrLabel').textContent = currentCurr;
                 
-                document.getElementById('rateDisplay').textContent = `1 ₽ = ${currentMultiplier.toFixed(2)} ${currentCurr}`;
+                let promo = document.getElementById('promoCode').value.trim().toUpperCase();
+                let isPromoActive = (promo === 'KORO2026');
                 
-                enteredRub = parseFloat(document.getElementById('amount').value) || 0;
-                calculatedLocal = enteredRub * currentMultiplier;
+                // Если промокод активен, обнуляем комиссию 5%
+                let effectiveRate = isPromoActive ? (currentMultiplier / 0.95) : currentMultiplier;
+                
+                document.getElementById('promoBadge').style.display = isPromoActive ? 'inline' : 'none';
+                document.getElementById('rateDisplay').textContent = `1 ₽ = ${effectiveRate.toFixed(2)} ${currentCurr}`;
+                
+                if(calcMode === 'rub') {
+                    enteredRub = parseFloat(document.getElementById('amount').value) || 0;
+                    calculatedLocal = enteredRub * effectiveRate;
+                    document.getElementById('amountLocal').value = enteredRub > 0 ? calculatedLocal.toFixed(2) : '';
+                } else {
+                    calculatedLocal = parseFloat(document.getElementById('amountLocal').value) || 0;
+                    enteredRub = calculatedLocal / effectiveRate;
+                    document.getElementById('amount').value = calculatedLocal > 0 ? enteredRub.toFixed(2) : '';
+                }
                 
                 let displayVal = enteredRub > 0 ? calculatedLocal.toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '0.00';
                 document.getElementById('totalLocal').textContent = displayVal + ' ' + currentCurr;
-                
                 saveDraft();
             }
 
@@ -872,7 +901,6 @@ async def webapp_handler(request):
                 try {
                     let response = await fetch(`/api/history?user_id=${user_id}&initData=${encodeURIComponent(tg.initData)}`);
                     let res = await response.json();
-                    
                     if(res.status !== 'success') throw new Error();
                     
                     if(res.data.length === 0) {
@@ -884,12 +912,14 @@ async def webapp_handler(request):
                     res.data.forEach(tx => {
                         let bClass = tx.status === 'SUCCESS' ? 'b-success' : (tx.status === 'REJECTED' ? 'b-reject' : 'b-pending');
                         let bText = tx.status === 'SUCCESS' ? 'Успешно' : (tx.status === 'REJECTED' ? 'Отклонено' : 'В обработке');
+                        let btnHtml = tx.status === 'SUCCESS' ? `<button class="btn-secondary" onclick="requestReceipt('${tx.tx_id}')" style="margin-top:8px;">Скачать чек</button>` : '';
                         
                         container.innerHTML += `
                             <div class="history-card">
                                 <div class="h-left">
                                     <div class="h-title">${tx.country}</div>
                                     <div class="h-desc">Код: ${tx.tx_id}</div>
+                                    ${btnHtml}
                                 </div>
                                 <div class="h-right">
                                     <div class="h-amount">${tx.rub} ₽</div>
@@ -898,32 +928,40 @@ async def webapp_handler(request):
                             </div>
                         `;
                     });
-                } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка или нет доступа</div>'; }
+                } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>'; }
+            }
+
+            async function requestReceipt(tx_id) {
+                haptic();
+                let user_id = tg.initDataUnsafe?.user?.id || 0;
+                try {
+                    let response = await fetch('/api/receipt', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ initData: tg.initData, tx_id: tx_id, user_id: user_id })
+                    });
+                    let res = await response.json();
+                    if(res.status === 'success') { tg.showAlert('Чек успешно сгенерирован и отправлен вам в чат бота!'); tg.close(); }
+                    else { tg.showAlert('Не удалось получить чек.'); }
+                } catch(e) { tg.showAlert('Ошибка связи с сервером.'); }
             }
 
             async function sendSupportMessage() {
                 haptic();
                 let msg = document.getElementById('supportMessage').value.trim();
-                if(!msg) { tg.showAlert('Пожалуйста, опишите вашу проблему перед отправкой.'); return; }
+                if(!msg) { tg.showAlert('Пожалуйста, опишите вашу проблему.'); return; }
                 
                 let user = tg.initDataUnsafe?.user || {};
                 try {
                     let response = await fetch('/api/support', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            initData: tg.initData,
-                            message: msg,
-                            username: user.username || 'Аноним', user_id: user.id || 0
-                        })
+                        body: JSON.stringify({ initData: tg.initData, message: msg, username: user.username, user_id: user.id })
                     });
                     let result = await response.json();
                     if(result.status === 'success') {
-                        tg.showAlert('Ваше обращение успешно отправлено! Мы ответим вам в ближайшее время.');
+                        tg.showAlert('Обращение отправлено! Мы ответим в ближайшее время.');
                         document.getElementById('supportMessage').value = '';
-                    } else {
-                        tg.showAlert('Произошла ошибка при отправке.');
-                    }
-                } catch(e) { tg.showAlert('Ошибка связи с сервером.'); }
+                    } else tg.showAlert('Ошибка отправки.');
+                } catch(e) { tg.showAlert('Ошибка связи.'); }
             }
 
             function startTimer(duration) {
@@ -933,7 +971,7 @@ async def webapp_handler(request):
                     minutes = parseInt(timer / 60, 10); seconds = parseInt(timer % 60, 10);
                     minutes = minutes < 10 ? "0" + minutes : minutes; seconds = seconds < 10 ? "0" + seconds : seconds;
                     document.getElementById('timerDisplay').textContent = minutes + ":" + seconds;
-                    if (--timer < 0) { clearInterval(timerInterval); alert('Время сессии истекло.'); location.reload(); }
+                    if (--timer < 0) { clearInterval(timerInterval); alert('Сессия истекла.'); location.reload(); }
                 }, 1000);
             }
 
@@ -941,16 +979,10 @@ async def webapp_handler(request):
                 haptic();
                 enteredRub = parseFloat(document.getElementById('amount').value) || 0;
                 let card = document.getElementById('recCard').value.replace(/\s+/g, '');
-                
-                // ДИНАМИЧЕСКИЙ ЛИМИТ: Защита маржи для EUR и USD из-за фикс. комиссий Capitalist
                 let minLimit = (currentCurr === 'EUR' || currentCurr === 'USD') ? 5000 : 1000;
                 
-                if (enteredRub < minLimit || enteredRub > 25000) { 
-                    tg.showAlert(`Для данного направления сумма перевода должна быть от ${minLimit.toLocaleString('ru-RU')} до 25 000 ₽`); 
-                    return; 
-                }
-                
-                if (card.length < 12) { tg.showAlert('Проверьте номер карты или счета получателя'); return; }
+                if (enteredRub < minLimit || enteredRub > 25000) { tg.showAlert(`Сумма от ${minLimit.toLocaleString('ru-RU')} до 25 000 ₽`); return; }
+                if (card.length < 12) { tg.showAlert('Проверьте номер карты'); return; }
                 let recNameInput = document.getElementById('recName').value.trim();
                 if (!recNameInput) { tg.showAlert('Укажите ФИО получателя'); return; }
                 if (!document.getElementById('termsCheck').checked) { tg.showAlert('Необходимо согласиться с Офертой'); return; }
@@ -959,7 +991,10 @@ async def webapp_handler(request):
                 document.getElementById('transferCommentText').textContent = currentOrderCode;
                 document.getElementById('payRubSum').textContent = enteredRub.toLocaleString('ru-RU') + ' ₽';
                 
-                localStorage.clear();
+                // Сохраняем в шаблоны
+                saveNewRecipient(recNameInput, document.getElementById('recCard').value, document.getElementById('recipientBank').value);
+                
+                localStorage.removeItem('koro_amount');
 
                 document.getElementById('bottomNav').style.display = 'none';
                 switchTab('tab-payment', null);
@@ -969,8 +1004,7 @@ async def webapp_handler(request):
             async function confirmPayment() {
                 haptic();
                 let btn = document.getElementById('btnConfirmPay');
-                btn.disabled = true;
-                btn.textContent = 'Обработка...';
+                btn.disabled = true; btn.textContent = 'Обработка...';
                 
                 let user = tg.initDataUnsafe?.user || {};
                 clearInterval(timerInterval);
@@ -987,28 +1021,21 @@ async def webapp_handler(request):
                             recipient_name: document.getElementById('recName').value.trim(),
                             recipient_card: document.getElementById('recCard').value,
                             transfer_comment: currentOrderCode,
+                            promo: document.getElementById('promoCode').value.trim().toUpperCase() || 'Нет',
                             username: user.username || 'Аноним', user_id: user.id || 0
                         })
                     });
-                    let result = await response.json();
-                    if (!response.ok) { 
-                        tg.showAlert(result.message || 'Ошибка сервера.'); 
-                        location.reload(); 
-                        return; 
-                    }
-                    
+                    if (!response.ok) { tg.showAlert('Ошибка сервера.'); location.reload(); return; }
                     switchTab('tab-success', null);
                 } catch (e) { 
                     tg.showAlert('Ошибка связи с сервером.'); 
-                    btn.disabled = false;
-                    btn.textContent = 'Я перевел(а) деньги';
+                    btn.disabled = false; btn.textContent = 'Я перевел(а) деньги';
                 }
             }
         </script>
     </body>
     </html>
     """.replace("ACTUAL_SYSTEM_CARD", current_card)
-
     return web.Response(text=html_content, content_type="text/html")
 
 
@@ -1018,18 +1045,17 @@ async def main():
     app.router.add_get("/", webapp_handler)
     app.router.add_post("/api/order", api_order_handler)
     app.router.add_post("/api/support", api_support_handler)
+    app.router.add_post("/api/receipt", api_request_receipt)
     app.router.add_get("/api/history", api_history_handler)
     
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080)))
     await site.start()
-    
     asyncio.create_task(update_rates())
     
     logging.info(f"Сервер Koro Pay запущен...")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
