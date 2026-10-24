@@ -481,7 +481,7 @@ async def webapp_handler(request):
             .logo-container { display: flex; align-items: center; gap: 12px; }
             .logo-img { width: 42px; height: 42px; border-radius: 10px; object-fit: cover; background: var(--surface); }
             .header-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
-            .header-title span { color: var(--primary); }
+            .header-title span { color: #9667E0; }
             .tagline { font-size: 11px; color: var(--text-sec); letter-spacing: 0.5px; text-transform: uppercase; margin-top: 2px; }
             
             .content { flex: 1; overflow-y: auto; padding: 15px 20px 80px; }
