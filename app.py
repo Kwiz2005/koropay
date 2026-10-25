@@ -202,6 +202,18 @@ async def cmd_start(message: types.Message):
     web_app_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📱 Открыть Koro Pay", web_app=WebAppInfo(url=WEBAPP_URL))]])
     await message.answer("<b>🌐 Koro Pay — Международные переводы</b>\n\nЛимит перевода: до 25 000 ₽ за раз.\n<i>Нажмите кнопку ниже, чтобы войти.</i>", reply_markup=web_app_kb, parse_mode="HTML")
 
+@dp.message(Command("setcard"))
+async def cmd_setcard(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    new_card = message.text.replace("/setcard", "").strip()
+    if not new_card:
+        await message.answer("Использование: /setcard 1111 2222 3333 4444")
+        return
+    async with aiosqlite.connect('koropay.db') as db:
+        await db.execute("UPDATE settings SET value=? WHERE key='receive_card'", (new_card,))
+        await db.commit()
+    await message.answer(f"✅ Реквизиты обновлены:\n<code>{new_card}</code>", parse_mode="HTML")
+
 @dp.message(Command("user"))
 async def cmd_user(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID: return
@@ -222,8 +234,21 @@ async def cmd_user(message: types.Message):
             if s[1] == 'SUCCESS': ltv = s[2] or 0.0
             
         ban_status = "ДА 🔴" if u_data[2] else "НЕТ 🟢"
-        await message.answer(f"👤 <b>CRM Досье:</b> <code>{target_id}</code> (@{u_data[0]})\nБан: {ban_status} | Страйков: {u_data[1]}/3\n🎁 <b>Бонусы:</b> {u_data[3]} ₽\n💎 <b>LTV:</b> {ltv:,.2f} ₽\n\n<b>Статистика:</b>\n{stat_text if stat_text else 'Нет операций'}", parse_mode="HTML")
+        ref_text = f"Приглашен: {u_data[4]}" if u_data[4] else "Органика"
+        await message.answer(f"👤 <b>CRM Досье:</b> <code>{target_id}</code> (@{u_data[0]})\nБан: {ban_status} | Страйков: {u_data[1]}/3\n🔗 Источник: {ref_text}\n🎁 <b>Бонусы:</b> {u_data[3]} ₽\n💎 <b>LTV:</b> {ltv:,.2f} ₽\n\n<b>Статистика:</b>\n{stat_text if stat_text else 'Нет операций'}", parse_mode="HTML")
     except: await message.answer("Использование: /user 123456789")
+
+@dp.message(Command("export"))
+async def cmd_export(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    csv_file = StringIO()
+    writer = csv.writer(csv_file)
+    writer.writerow(["TX_ID", "USER_ID", "COUNTRY", "RUB", "LOCAL", "CURRENCY", "STATUS", "DATE", "BONUS_USED", "METHOD"])
+    async with aiosqlite.connect('koropay.db') as db:
+        async with db.execute("SELECT tx_id, user_id, country, rub_amount, local_amount, currency, status, created_at, bonus_used, pay_method FROM transfers ORDER BY ROWID DESC") as cursor:
+            for row in await cursor.fetchall(): writer.writerow(row)
+    file = BufferedInputFile(BytesIO(csv_file.getvalue().encode('utf-8')).getvalue(), filename=f"KoroPay_Export_{datetime.now().strftime('%Y%m%d')}.csv")
+    await message.answer_document(document=file, caption="📊 Реестр всех переводов выгружен.")
 
 # --- API ШЛЮЗЫ ---
 async def api_profile_handler(request):
@@ -245,6 +270,39 @@ async def api_history_handler(request):
         result = [{"tx_id": tx[0], "country": tx[1], "rub": tx[2], "local": tx[3], "currency": tx[4], "status": tx[5]} for tx in history]
         return web.json_response({"status": "success", "data": result})
     except Exception as e: return web.json_response({"status": "error", "message": str(e)}, status=400)
+
+async def api_request_receipt(request):
+    try:
+        data = await request.json()
+        if not validate_webapp_data(data.get("initData", ""), TOKEN): return web.json_response({"status": "error"}, status=403)
+        tx_id, user_id = data.get("tx_id"), data.get("user_id")
+        
+        async with aiosqlite.connect('koropay.db') as db:
+            async with db.execute("SELECT rub_amount, local_amount, currency FROM transfers WHERE tx_id=? AND status='SUCCESS'", (tx_id,)) as cursor:
+                tx_data = await cursor.fetchone()
+                
+        if not tx_data: return web.json_response({"status": "error", "message": "Чек недоступен или транзакция не успешна"})
+        
+        image_buffer = generate_receipt_image(tx_id, tx_data[0], tx_data[1], tx_data[2], "Клиент Сервиса", "Банк Получателя", "**** **** **** ****")
+        photo = BufferedInputFile(image_buffer.getvalue(), filename=f"KoroPay_{tx_id}.png")
+        await bot.send_photo(user_id, photo=photo, caption=f"📄 <b>Дубликат чека</b>\n🆔 <code>{tx_id}</code>", parse_mode="HTML")
+        return web.json_response({"status": "success"})
+    except Exception: return web.json_response({"status": "error"}, status=400)
+
+async def api_support_handler(request):
+    try:
+        data = await request.json()
+        if not validate_webapp_data(data.get("initData", ""), TOKEN): return web.json_response({"status": "error"}, status=403)
+        user_id, username, message_text = data.get("user_id"), data.get("username", "Аноним"), data.get("message", "")
+
+        support_msg = (
+            f"🆘 <b>ТИКЕТ В ПОДДЕРЖКУ (ИЗ WEBAPP)</b>\n\n"
+            f"👤 От: @{username} (ID: <code>{user_id}</code>)\n\n"
+            f"📝 <b>Сообщение клиента:</b>\n{message_text}"
+        )
+        if ADMIN_CHAT_ID: await bot.send_message(ADMIN_CHAT_ID, support_msg, parse_mode="HTML")
+        return web.json_response({"status": "success"})
+    except Exception: return web.json_response({"status": "error"}, status=400)
 
 async def api_crypto_create(request):
     try:
@@ -329,7 +387,8 @@ async def api_order_handler(request):
         active_card = await get_active_card()
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Выполнен", callback_data=f"approve_{user_id}_{tx_id}")],
-            [InlineKeyboardButton(text="❌ Отмена: Нет платежа", callback_data=f"rej_fake_{user_id}_{tx_id}")]
+            [InlineKeyboardButton(text="❌ Отмена: Нет платежа", callback_data=f"rej_fake_{user_id}_{tx_id}")],
+            [InlineKeyboardButton(text="❌ Отмена: AML", callback_data=f"rej_aml_{user_id}_{tx_id}")]
         ])
         
         actual_rub_to_pay = float(rub_amount.replace(" ₽", "")) - bonus_used
@@ -384,10 +443,11 @@ async def process_approve(callback: types.CallbackQuery):
 async def process_reject(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     reason_type, target_user_id, tx_id = parts[1], int(parts[2]), parts[3]
-    reason_text = "нарушение правил" if reason_type == "aml" else "платеж не поступил"
+    reason_text = "сработал AML-контроль" if reason_type == "aml" else "платеж не поступил"
     async with aiosqlite.connect('koropay.db') as db:
         await db.execute("UPDATE transfers SET status='REJECTED' WHERE tx_id=?", (tx_id,))
         await db.commit()
+    await add_strike(target_user_id)
     await callback.message.edit_text(callback.message.text + f"\n\n❌ <b>ОТМЕНЕНО: {reason_text.upper()}</b>", parse_mode="HTML")
     try: await bot.send_message(target_user_id, f"❌ Ваш перевод <code>{tx_id}</code> отменен.\nПричина: {reason_text}.", parse_mode="HTML")
     except: pass
@@ -468,12 +528,16 @@ async def webapp_handler(request):
             .checkbox-wrapper input { width: 22px; height: 22px; accent-color: var(--primary); }
             
             .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--bg); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }
-            .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; }
+            .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; width: 25%; text-align: center; }
             .nav-item.active { color: var(--primary); }
             .nav-icon { font-size: 22px; margin-bottom: 4px; }
             
             .history-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
             .history-card:last-child { border-bottom: none; padding-bottom: 0; }
+            .h-left .h-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+            .h-left .h-desc { font-size: 12px; color: var(--text-sec); }
+            .h-right { text-align: right; }
+            .h-right .h-amount { font-size: 15px; font-weight: 700; margin-bottom: 4px; color: var(--text); }
             .badge { font-size: 10px; font-weight: 800; padding: 4px 8px; border-radius: 6px; display: inline-block; text-transform: uppercase; }
             .b-pending { background: rgba(255, 159, 10, 0.15); color: var(--warning); }
             .b-success { background: rgba(48, 209, 88, 0.15); color: var(--success); }
@@ -483,7 +547,7 @@ async def webapp_handler(request):
             .modal-content { background: var(--surface); width: 100%; border-radius: 24px 24px 0 0; padding: 24px; max-height: 85vh; overflow-y: auto; animation: slideUp 0.3s; border-top: 1px solid var(--border); }
             @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
             .modal-close { width: 40px; height: 5px; background: var(--border); border-radius: 3px; margin: 0 auto 20px; }
-            .legal-text h3 { margin-top: 0; font-size: 20px; font-weight: 800; color: var(--text); }
+            .legal-text h3 { margin-top: 0; font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 16px; }
             .legal-text p { font-size: 13px; color: var(--text-sec); line-height: 1.6; margin-bottom: 12px; }
         </style>
     </head>
@@ -508,7 +572,6 @@ async def webapp_handler(request):
 
             <div class="content">
                 <div id="tab-transfer" class="screen active">
-                    
                     <div class="address-book" id="addressBook" style="display: none;"></div>
 
                     <div class="card-panel">
@@ -629,6 +692,30 @@ async def webapp_handler(request):
 
                     <button id="btnConfirmPay" class="btn-primary" onclick="confirmPayment()" style="background: var(--success); box-shadow: 0 4px 15px rgba(48, 209, 88, 0.2);">Я перевел(а) на Озон Банк</button>
                 </div>
+                
+                <div id="tab-history" class="screen">
+                    <h2 style="margin-bottom: 20px; font-weight: 800;">История операций</h2>
+                    <div class="card-panel" id="historyContainer">
+                        <div style="text-align:center; padding: 20px; color: var(--text-sec);">⏳ Загрузка данных...</div>
+                    </div>
+                </div>
+
+                <div id="tab-support" class="screen">
+                    <h2 style="margin-bottom: 20px; font-weight: 800;">Техподдержка</h2>
+                    <div class="card-panel" style="margin-bottom: 16px;">
+                        <label>Написать в поддержку</label>
+                        <textarea id="supportMessage" rows="4" placeholder="Опишите вашу проблему с переводом..."></textarea>
+                        <button class="btn-primary" onclick="sendSupportMessage()" style="font-size: 14px; padding: 12px; margin-top: 12px;">Отправить обращение</button>
+                    </div>
+                    
+                    <div class="card-panel" style="text-align: center; padding: 24px 18px;">
+                        <h3 style="margin: 0 0 8px 0; font-size: 16px;">Альтернативный способ</h3>
+                        <p style="color: var(--text-sec); font-size: 12px; line-height: 1.5; margin-bottom: 16px;">
+                            Вы также можете написать нашему оператору напрямую в Telegram.
+                        </p>
+                        <button class="btn-copy" onclick="tg.openTelegramLink('https://t.me/koropay_support')" style="margin-top:0;">Открыть чат с оператором</button>
+                    </div>
+                </div>
 
                 <div id="tab-profile" class="screen">
                     <h2 style="margin-bottom: 20px; font-weight: 800;">Мой Профиль</h2>
@@ -657,7 +744,7 @@ async def webapp_handler(request):
                     <h2 style="margin-bottom: 12px; font-weight: 800;" id="successTitle">Ожидание перевода</h2>
                     <p style="color: var(--text-sec); font-size: 15px; line-height: 1.6; margin-bottom: 32px; background: var(--surface); padding: 20px; border-radius: 16px; border: 1px solid var(--border);" id="successDesc">
                         Мы проверяем поступление вашего платежа. <br><br>
-                        Как только средства будут подтверждены, <b>наш администратор осуществит перевод получателю</b>.
+                        Как только средства будут подтверждены, <b>перевод будет осуществлен получателю</b>. Вы получите чек в этот чат.
                     </p>
                     <button id="btnCheckCrypto" class="btn-primary btn-crypto" style="display:none; margin-bottom:12px;" onclick="checkCryptoPayment()">Обновить статус оплаты</button>
                     <button class="btn-primary" onclick="tg.close()">Вернуться в чат</button>
@@ -666,6 +753,8 @@ async def webapp_handler(request):
 
             <div class="bottom-nav" id="bottomNav">
                 <div class="nav-item active" onclick="switchTab('tab-transfer', this)"><div class="nav-icon">💸</div><div>Перевод</div></div>
+                <div class="nav-item" onclick="switchTab('tab-history', this); loadHistory();"><div class="nav-icon">🕒</div><div>История</div></div>
+                <div class="nav-item" onclick="switchTab('tab-support', this)"><div class="nav-icon">🎧</div><div>Помощь</div></div>
                 <div class="nav-item" onclick="switchTab('tab-profile', this); loadProfile();"><div class="nav-icon">⚙️</div><div>Профиль</div></div>
             </div>
         </div>
@@ -674,10 +763,11 @@ async def webapp_handler(request):
             <div class="modal-content legal-text">
                 <div class="modal-close"></div>
                 <h3>Договор публичной оферты Koro Pay</h3>
-                <p><b>1. Общие положения.</b> Настоящий документ является официальным предложением сервиса Koro Pay и определяет условия предоставления услуг по международным P2P переводам.</p>
-                <p><b>2. Предмет соглашения.</b> Сервис обязуется принимать рублевые платежи и организовывать зачисление эквивалентной суммы в местной валюте на указанные реквизиты.</p>
-                <p><b>3. Финансовые условия.</b> Расчет суммы производится по рыночному курсу с учетом комиссии. Бонусные рубли могут быть использованы для частичной оплаты комиссии.</p>
-                <p><b>4. Политика AML.</b> Пользователь гарантирует легальное происхождение средств. При подозрении на мошенничество Сервис имеет право запросить верификацию.</p>
+                <p><b>1. Общие положения.</b> Настоящий договор является публичной офертой в соответствии со ст. 437 ГК РФ. Использование сервиса Koro Pay (включая Telegram WebApp) означает безоговорочное принятие пользователем условий настоящего договора (акцепт).</p>
+                <p><b>2. Предмет соглашения.</b> Сервис предоставляет услуги информационно-технического сопровождения международных P2P-переводов. Сервис не является кредитной организацией и функционирует исключительно как агрегатор платежных шлюзов.</p>
+                <p><b>3. Финансовые условия и расчеты.</b> Итоговая сумма к зачислению фиксируется на момент создания заявки и отображается в интерфейсе. Оплата осуществляется пользователем в рублях или криптовалюте. Сервисная комиссия интегрирована в итоговый курс. Пользователь вправе применять бонусные рубли (в рамках программы лояльности) для частичной или полной компенсации комиссии.</p>
+                <p><b>4. Политика AML и KYC.</b> Пользователь подтверждает исключительно легальное происхождение переводимых средств. Категорически запрещено использование реквизитов третьих лиц и анонимных платежных инструментов. При выявлении транзакций, вызывающих подозрения, Сервис оставляет за собой право приостановить операцию, запросить документы, подтверждающие личность (KYC), либо осуществить возврат средств отправителю за вычетом комиссий шлюзов.</p>
+                <p><b>5. Ответственность сторон.</b> Сервис не несет финансовой ответственности за возможные задержки на стороне банков-эмитентов, ошибки пользователя при указании реквизитов, а также блокировки карт получателей местными органами финансового мониторинга. Обязательства Сервиса считаются выполненными в момент успешной передачи средств локальному провайдеру (выдача чека).</p>
                 <button class="btn-primary" style="margin-top: 24px;" onclick="closeModal('ofertaModal')">Я ознакомлен и согласен</button>
             </div>
         </div>
@@ -734,7 +824,6 @@ async def webapp_handler(request):
             async function initApp() { 
                 document.getElementById('refLink').value = `https://t.me/koropay_bot?start=${tg.initDataUnsafe?.user?.id || 'ref'}`;
                 
-                // Fetch Profile Balance on load
                 try {
                     let response = await fetch(`/api/profile?user_id=${tg.initDataUnsafe?.user?.id || 0}&initData=${encodeURIComponent(tg.initData)}`);
                     let res = await response.json();
@@ -848,9 +937,9 @@ async def webapp_handler(request):
                     document.getElementById('amount').value = calculatedLocal > 0 ? enteredRub.toFixed(2) : '';
                 }
                 
-                // Обработка бонусов
                 appliedBonus = 0;
-                if(document.getElementById('useBonusCheck').checked) {
+                let bonusCheck = document.getElementById('useBonusCheck');
+                if(bonusCheck && bonusCheck.checked) {
                     appliedBonus = Math.min(enteredRub, userBonusBalance);
                 }
                 
@@ -874,6 +963,74 @@ async def webapp_handler(request):
                     let res = await response.json();
                     if(res.status === 'success') { document.getElementById('bonusBalanceDisplay').textContent = res.balance.toFixed(2) + ' ₽'; }
                 } catch(e) {}
+            }
+            
+            async function loadHistory() {
+                let user_id = tg.initDataUnsafe?.user?.id || 0;
+                let container = document.getElementById('historyContainer');
+                try {
+                    let response = await fetch(`/api/history?user_id=${user_id}&initData=${encodeURIComponent(tg.initData)}`);
+                    let res = await response.json();
+                    if(res.status !== 'success') throw new Error();
+                    
+                    if(res.data.length === 0) {
+                        container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--text-sec); font-weight: 500;">У вас пока нет операций</div>';
+                        return;
+                    }
+                    container.innerHTML = '';
+                    res.data.forEach(tx => {
+                        let bClass = tx.status === 'SUCCESS' ? 'b-success' : (tx.status === 'REJECTED' ? 'b-reject' : 'b-pending');
+                        let bText = tx.status === 'SUCCESS' ? 'Успешно' : (tx.status === 'REJECTED' ? 'Отклонено' : 'В обработке');
+                        let btnHtml = tx.status === 'SUCCESS' ? `<button class="btn-secondary" onclick="requestReceipt('${tx.tx_id}')" style="margin-top:8px;">Скачать чек</button>` : '';
+                        
+                        container.innerHTML += `
+                            <div class="history-card">
+                                <div class="h-left">
+                                    <div class="h-title">${tx.country}</div>
+                                    <div class="h-desc">Код: ${tx.tx_id}</div>
+                                    ${btnHtml}
+                                </div>
+                                <div class="h-right">
+                                    <div class="h-amount">${tx.rub} ₽</div>
+                                    <div class="badge ${bClass}">${bText}</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                } catch(e) { container.innerHTML = '<div style="text-align:center; padding: 20px; color: var(--danger);">Ошибка загрузки</div>'; }
+            }
+
+            async function requestReceipt(tx_id) {
+                haptic();
+                let user_id = tg.initDataUnsafe?.user?.id || 0;
+                try {
+                    let response = await fetch('/api/receipt', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ initData: tg.initData, tx_id: tx_id, user_id: user_id })
+                    });
+                    let res = await response.json();
+                    if(res.status === 'success') { tg.showAlert('Чек успешно сгенерирован и отправлен вам в чат бота!'); tg.close(); }
+                    else { tg.showAlert('Не удалось получить чек.'); }
+                } catch(e) { tg.showAlert('Ошибка связи с сервером.'); }
+            }
+
+            async function sendSupportMessage() {
+                haptic();
+                let msg = document.getElementById('supportMessage').value.trim();
+                if(!msg) { tg.showAlert('Пожалуйста, опишите вашу проблему.'); return; }
+                
+                let user = tg.initDataUnsafe?.user || {};
+                try {
+                    let response = await fetch('/api/support', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ initData: tg.initData, message: msg, username: user.username, user_id: user.id })
+                    });
+                    let result = await response.json();
+                    if(result.status === 'success') {
+                        tg.showAlert('Обращение отправлено! Мы ответим в ближайшее время.');
+                        document.getElementById('supportMessage').value = '';
+                    } else tg.showAlert('Ошибка отправки.');
+                } catch(e) { tg.showAlert('Ошибка связи.'); }
             }
 
             function startTimer(duration) {
@@ -913,7 +1070,6 @@ async def webapp_handler(request):
                 startTimer(900);
             }
 
-            // --- CRYPTO PAY (АВТОМАТИКА) ---
             async function startCryptoPay() {
                 haptic();
                 let btn = document.getElementById('btnCryptoPay');
@@ -1013,6 +1169,9 @@ async def main():
     app.router.add_get("/api/profile", api_profile_handler)
     app.router.add_get("/api/history", api_history_handler)
     app.router.add_post("/api/order", api_order_handler)
+    
+    app.router.add_post("/api/receipt", api_request_receipt)
+    app.router.add_post("/api/support", api_support_handler)
     
     app.router.add_post("/api/crypto/create", api_crypto_create)
     app.router.add_post("/api/crypto/check", api_crypto_check)
