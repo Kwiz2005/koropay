@@ -527,10 +527,13 @@ async def webapp_handler(request):
             .checkbox-wrapper { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-sec); margin-bottom: 20px; }
             .checkbox-wrapper input { width: 22px; height: 22px; accent-color: var(--primary); }
             
+            /* --- НАВИГАЦИОННАЯ ПАНЕЛЬ С КАРТИНКАМИ --- */
             .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--bg); border-top: 1px solid var(--border); display: flex; justify-content: space-around; padding: 12px 0 24px; z-index: 50; }
             .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--text-sec); font-size: 10px; cursor: pointer; font-weight: 600; transition: color 0.2s; width: 25%; text-align: center; }
             .nav-item.active { color: var(--primary); }
-            .nav-icon { font-size: 22px; margin-bottom: 4px; }
+            .nav-icon-img { width: 28px; height: 28px; margin-bottom: 4px; object-fit: contain; transition: filter 0.2s; opacity: 0.7; }
+            .nav-item.active .nav-icon-img { opacity: 1; filter: drop-shadow(0 0 6px rgba(150, 103, 224, 0.8)); }
+            /* ----------------------------------------- */
             
             .history-card { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
             .history-card:last-child { border-bottom: none; padding-bottom: 0; }
@@ -751,11 +754,24 @@ async def webapp_handler(request):
                 </div>
             </div>
 
+            <!-- ИКОНКИ НАВИГАЦИОННОЙ ПАНЕЛИ С GITHUB -->
             <div class="bottom-nav" id="bottomNav">
-                <div class="nav-item active" onclick="switchTab('tab-transfer', this)"><div class="nav-icon">💸</div><div>Перевод</div></div>
-                <div class="nav-item" onclick="switchTab('tab-history', this); loadHistory();"><div class="nav-icon">🕒</div><div>История</div></div>
-                <div class="nav-item" onclick="switchTab('tab-support', this)"><div class="nav-icon">🎧</div><div>Помощь</div></div>
-                <div class="nav-item" onclick="switchTab('tab-profile', this); loadProfile();"><div class="nav-icon">⚙️</div><div>Профиль</div></div>
+                <div class="nav-item active" onclick="switchTab('tab-transfer', this)">
+                    <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_transfer.png" class="nav-icon-img" onerror="this.style.display='none'">
+                    <div>Перевод</div>
+                </div>
+                <div class="nav-item" onclick="switchTab('tab-history', this); loadHistory();">
+                    <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_history.png" class="nav-icon-img" onerror="this.style.display='none'">
+                    <div>История</div>
+                </div>
+                <div class="nav-item" onclick="switchTab('tab-support', this)">
+                    <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_support.png" class="nav-icon-img" onerror="this.style.display='none'">
+                    <div>Помощь</div>
+                </div>
+                <div class="nav-item" onclick="switchTab('tab-profile', this); loadProfile();">
+                    <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_profile.png" class="nav-icon-img" onerror="this.style.display='none'">
+                    <div>Профиль</div>
+                </div>
             </div>
         </div>
 
