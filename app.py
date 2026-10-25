@@ -202,6 +202,57 @@ async def cmd_start(message: types.Message):
     web_app_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📱 Открыть Koro Pay", web_app=WebAppInfo(url=WEBAPP_URL))]])
     await message.answer("<b>🌐 Koro Pay — Международные переводы</b>\n\nЛимит перевода: до 25 000 ₽ за раз.\n<i>Нажмите кнопку ниже, чтобы войти.</i>", reply_markup=web_app_kb, parse_mode="HTML")
 
+@dp.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    text = (
+        "🛠 <b>АДМИН-ПАНЕЛЬ KORO PAY</b>\n\n"
+        "<code>/user [ID]</code> — Досье и статистика клиента\n"
+        "<code>/setcard [КАРТА]</code> — Сменить реквизиты приема\n"
+        "<code>/addbonus [ID] [СУММА]</code> — Начислить/списать бонусы\n"
+        "<code>/ban [ID]</code> — Заблокировать клиента\n"
+        "<code>/unban [ID]</code> — Разблокировать (обнулить страйки)\n"
+        "<code>/export</code> — Выгрузить все переводы в CSV"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("addbonus"))
+async def cmd_addbonus(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    try:
+        parts = message.text.split()
+        uid, amount = int(parts[1]), float(parts[2])
+        async with aiosqlite.connect('koropay.db') as db:
+            await db.execute("UPDATE users SET bonus_balance = bonus_balance + ? WHERE user_id=?", (amount, uid))
+            await db.commit()
+        await message.answer(f"✅ Баланс пользователя {uid} успешно изменен на {amount} ₽.")
+        if amount > 0:
+            try: await bot.send_message(uid, f"🎁 <b>Вам начислен бонус: {amount} ₽!</b>", parse_mode="HTML")
+            except: pass
+    except: await message.answer("Использование: /addbonus 123456789 50")
+
+@dp.message(Command("ban"))
+async def cmd_ban(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    try:
+        uid = int(message.text.split()[1])
+        async with aiosqlite.connect('koropay.db') as db:
+            await db.execute("UPDATE users SET is_banned = 1 WHERE user_id=?", (uid,))
+            await db.commit()
+        await message.answer(f"🚫 Пользователь {uid} заблокирован.")
+    except: await message.answer("Использование: /ban 123456789")
+
+@dp.message(Command("unban"))
+async def cmd_unban(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID: return
+    try:
+        uid = int(message.text.split()[1])
+        async with aiosqlite.connect('koropay.db') as db:
+            await db.execute("UPDATE users SET is_banned = 0, strikes = 0 WHERE user_id=?", (uid,))
+            await db.commit()
+        await message.answer(f"✅ Пользователь {uid} разблокирован.")
+    except: await message.answer("Использование: /unban 123456789")
+
 @dp.message(Command("setcard"))
 async def cmd_setcard(message: types.Message):
     if message.from_user.id != ADMIN_CHAT_ID: return
@@ -367,7 +418,7 @@ async def api_order_handler(request):
         country, currency = data.get("country", "СНГ"), data.get("currency", "VAL")
         rub_amount, local_received = data.get("rub_amount", "0"), data.get("local_received", "0")
         recipient_bank, recipient_card, recipient_name = data.get("recipient_bank", ""), data.get("recipient_card", ""), data.get("recipient_name", "")
-        tx_id, promo, bonus_used = data.get("transfer_comment", ""), data.get("promo", "Нет"), float(data.get("bonus_used", 0))
+        tx_id, bonus_used = data.get("transfer_comment", ""), float(data.get("bonus_used", 0))
 
         if bonus_used > 0:
             async with aiosqlite.connect("koropay.db") as db:
@@ -394,7 +445,7 @@ async def api_order_handler(request):
         actual_rub_to_pay = float(rub_amount.replace(" ₽", "")) - bonus_used
         admin_message = (
             f"🚨 <b>НОВАЯ ЗАЯВКА!</b>\n\n👤 Клиент: @{data.get('username', 'Аноним')} (ID: <code>{user_id}</code>)\n🆔 Транзакция: <code>{tx_id}</code>\n"
-            f"🎟 Промокод: <b>{promo}</b> | 💎 Бонусов списано: <b>{bonus_used} ₽</b>\n\n"
+            f"💎 Бонусов списано: <b>{bonus_used} ₽</b>\n\n"
             f"1️⃣ Проверь поступление <b>{actual_rub_to_pay} ₽</b> на реквизиты:\n<code>{active_card}</code>\n"
             f"2️⃣ Переведи <b>{local_received} {currency}</b>:\n   🏦 Банк: <b>{recipient_bank}</b>\n   💳 Карта: <code>{recipient_card}</code>\n   👤 ФИО: <b>{recipient_name}</b>\n"
         )
@@ -629,11 +680,6 @@ async def webapp_handler(request):
                     </div>
 
                     <div class="card-panel">
-                        <div class="input-group" style="margin-bottom: 12px;">
-                            <label>Промокод (Если есть)</label>
-                            <input type="text" id="promoCode" placeholder="Например: KORO2026" oninput="calculateParams()" style="text-transform: uppercase;">
-                        </div>
-                        
                         <div id="bonusBlock" style="display: none; justify-content: space-between; align-items: center; padding: 12px; background: rgba(150,103,224,0.1); border-radius: 12px; margin-bottom: 16px;">
                             <div>
                                 <div style="font-weight: 600; font-size: 13px; color: var(--text);">Списать бонусы</div>
@@ -643,7 +689,7 @@ async def webapp_handler(request):
                         </div>
 
                         <div class="receipt-row">
-                            <span>Актуальный курс <span id="promoBadge" style="display:none; color:var(--success); font-size:10px;">(БЕЗ КОМИССИИ)</span></span>
+                            <span>Актуальный курс</span>
                             <span id="rateDisplay" style="color: var(--primary); font-weight: 600;">0.00</span>
                         </div>
                         <div class="receipt-row total">
@@ -936,11 +982,8 @@ async def webapp_handler(request):
                 currentCurr = val[1]; currentMultiplier = parseFloat(val[2]);
                 document.getElementById('localCurrLabel').textContent = currentCurr;
                 
-                let promo = document.getElementById('promoCode').value.trim().toUpperCase();
-                let isPromoActive = (promo === 'KORO2026');
-                let effectiveRate = isPromoActive ? (currentMultiplier / 0.95) : currentMultiplier;
+                let effectiveRate = currentMultiplier; 
                 
-                document.getElementById('promoBadge').style.display = isPromoActive ? 'inline' : 'none';
                 document.getElementById('rateDisplay').textContent = `1 ₽ = ${effectiveRate.toFixed(2)} ${currentCurr}`;
                 
                 if(calcMode === 'rub') {
@@ -1163,7 +1206,6 @@ async def webapp_handler(request):
                             recipient_name: document.getElementById('recName').value.trim(),
                             recipient_card: document.getElementById('recCard').value,
                             transfer_comment: currentOrderCode,
-                            promo: document.getElementById('promoCode').value.trim().toUpperCase() || 'Нет',
                             bonus_used: appliedBonus,
                             username: user.username || 'Аноним', user_id: user.id || 0
                         })
