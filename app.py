@@ -608,7 +608,9 @@ async def webapp_handler(request):
     <body>
         
         <div id="biometricLock">
-            <div style="font-size: 60px; margin-bottom: 20px;">🛡</div>
+            <div style="margin-bottom: 20px;">
+                <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_login.png" style="width: 100px; height: 100px; object-fit: contain;" onerror="this.style.display='none'">
+            </div>
             <h2 style="margin-bottom: 10px; font-weight: 800;">Вход в Koro Pay</h2>
             <p style="color: var(--text-sec); font-size: 14px; max-width: 80%;">Запрашиваем биометрию устройства для безопасности ваших финансов.</p>
         </div>
@@ -722,7 +724,9 @@ async def webapp_handler(request):
                         <div id="payRubSum" style="font-size: 32px; font-weight: 800; color: var(--text);">0 ₽</div>
                     </div>
 
-                    <button id="btnCryptoPay" class="btn-primary btn-crypto" onclick="startCryptoPay()">💎 Оплатить криптой (Автоматически)</button>
+                    <button id="btnCryptoPay" class="btn-primary btn-crypto" onclick="startCryptoPay()" style="display: flex; gap: 10px; align-items: center; justify-content: center;">
+                        <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_crypto.png" style="width: 24px; height: 24px; object-fit: contain;"> Оплатить криптой (Автоматически)
+                    </button>
                     
                     <div style="text-align: center; margin: 16px 0; color: var(--text-sec); font-size: 12px; font-weight: 600; text-transform: uppercase;">или ручной перевод</div>
                     
@@ -770,7 +774,10 @@ async def webapp_handler(request):
                     <h2 style="margin-bottom: 20px; font-weight: 800;">Мой Профиль</h2>
                     
                     <div class="card-panel">
-                        <label style="margin-bottom: 12px;">🎁 Пригласить друга</label>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                            <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_invite.png" style="width: 24px; height: 24px; object-fit: contain;" onerror="this.style.display='none'">
+                            <label style="margin-bottom: 0;">Пригласить друга</label>
+                        </div>
                         <p style="font-size: 12px; color: var(--text-sec); line-height: 1.4; margin: 0 0 12px 0;">Ваш баланс: <b id="bonusBalanceDisplay" style="color: var(--success);">0.00 ₽</b><br>Получайте 50 ₽ за каждый успешный перевод друга. Вы можете списать их при следующем переводе.</p>
                         <div style="display: flex; gap: 8px;">
                             <input type="text" id="refLink" readonly style="font-size: 12px; padding: 10px;">
@@ -1156,9 +1163,14 @@ async def webapp_handler(request):
                         switchTab('tab-success', null);
                     } else {
                         tg.showAlert(result.message || 'Ошибка крипто-шлюза.');
-                        btn.disabled = false; btn.textContent = '💎 Оплатить криптой (Автоматически)';
+                        btn.innerHTML = '<img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_crypto.png" style="width: 24px; height: 24px; object-fit: contain;"> Оплатить криптой (Автоматически)';
+                        btn.disabled = false;
                     }
-                } catch (e) { tg.showAlert('Ошибка связи с сервером.'); btn.disabled = false; }
+                } catch (e) { 
+                    tg.showAlert('Ошибка связи с сервером.');
+                    btn.innerHTML = '<img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_crypto.png" style="width: 24px; height: 24px; object-fit: contain;"> Оплатить криптой (Автоматически)';
+                    btn.disabled = false; 
+                }
             }
 
             async function checkCryptoPayment() {
