@@ -33,6 +33,8 @@ WEBAPP_URL = "https://koropay-en5x.onrender.com"
 CRYPTO_PAY_TOKEN = "659313:AA4ny26j7kzZSueEiwPXYimHuTfwyfc14e1"
 # =========================
 
+BOT_USERNAME = ""  # Заполняется автоматически при старте сервера
+
 RECEIVE_BANK = "Озон Банк"
 RECEIVE_HOLDER = "Mirelem Ismailzade"
 
@@ -506,6 +508,7 @@ async def process_reject(callback: types.CallbackQuery):
 
 async def webapp_handler(request):
     current_card = await get_active_card()
+    
     html_content = """
     <!DOCTYPE html>
     <html lang="ru">
@@ -571,7 +574,7 @@ async def webapp_handler(request):
             .btn-primary { width: 100%; padding: 16px; background: var(--primary-grad); color: #fff; border: none; border-radius: 14px; font-size: 16px; font-weight: 700; cursor: pointer; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3); transition: opacity 0.2s; }
             .btn-primary:active { opacity: 0.8; }
             .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-            .btn-crypto { background: #2AABEE; color: #fff; box-shadow: 0 4px 15px rgba(42, 171, 238, 0.3); margin-top: 12px;}
+            .btn-crypto { background: var(--primary-grad) !important; box-shadow: 0 4px 15px rgba(150, 103, 224, 0.3) !important; color: #fff !important; margin-top: 12px; border: none !important;}
             .btn-secondary { background: transparent; color: var(--primary); padding: 8px 12px; border: 1px solid var(--primary); border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
             .btn-copy { background: var(--surface-hover); color: var(--primary); padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 14px; font-weight: 600; width: 100%; margin-top: 12px; cursor: pointer; }
 
@@ -714,7 +717,10 @@ async def webapp_handler(request):
 
                 <div id="tab-payment" class="screen">
                     <div style="text-align: center; margin-bottom: 24px;">
-                        <div style="font-size: 48px; margin-bottom: 10px;">💳</div>
+                        <!-- ЗАМЕНА ЭМОДЗИ НА КАРТИНКУ КОШЕЛЬКА -->
+                        <div style="margin-bottom: 10px;">
+                            <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_wallet.png" style="width: 80px; height: 80px; object-fit: contain;" alt="wallet" onerror="this.style.display='none'">
+                        </div>
                         <h2 style="margin:0; font-weight: 800;">Методы оплаты</h2>
                         <div style="color: var(--warning); font-weight: 700; margin-top: 10px; font-size: 18px;" id="timerDisplay">15:00</div>
                     </div>
@@ -724,8 +730,9 @@ async def webapp_handler(request):
                         <div id="payRubSum" style="font-size: 32px; font-weight: 800; color: var(--text);">0 ₽</div>
                     </div>
 
+                    <!-- КНОПКА ОПЛАТЫ КРИПТОВАЛЮТОЙ С НОВЫМ ЦВЕТОМ -->
                     <button id="btnCryptoPay" class="btn-primary btn-crypto" onclick="startCryptoPay()" style="display: flex; gap: 10px; align-items: center; justify-content: center;">
-                        <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_crypto.png" style="width: 24px; height: 24px; object-fit: contain;"> Оплатить криптой (Автоматически)
+                        <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_crypto.png" style="width: 24px; height: 24px; object-fit: contain;" onerror="this.style.display='none'"> Оплатить криптой (Автоматически)
                     </button>
                     
                     <div style="text-align: center; margin: 16px 0; color: var(--text-sec); font-size: 12px; font-weight: 600; text-transform: uppercase;">или ручной перевод</div>
@@ -807,7 +814,6 @@ async def webapp_handler(request):
                 </div>
             </div>
 
-            <!-- ИКОНКИ НАВИГАЦИОННОЙ ПАНЕЛИ С GITHUB -->
             <div class="bottom-nav" id="bottomNav">
                 <div class="nav-item active" onclick="switchTab('tab-transfer', this)">
                     <img src="https://raw.githubusercontent.com/Kwiz2005/koropay/main/icon_transfer.png" class="nav-icon-img" onerror="this.style.display='none'">
@@ -845,7 +851,6 @@ async def webapp_handler(request):
             let tg = window.Telegram.WebApp;
             tg.expand();
             
-            // --- NATIVE BIOMETRY INTEGRATION ---
             let bm = tg.BiometricManager;
             bm.init(() => {
                 if (bm.isBiometricAvailable) {
@@ -891,7 +896,8 @@ async def webapp_handler(request):
             let savedRecipients = JSON.parse(localStorage.getItem('koro_recipients') || '[]');
 
             async function initApp() { 
-                document.getElementById('refLink').value = `https://t.me/koropay_bot?start=${tg.initDataUnsafe?.user?.id || 'ref'}`;
+                // ДИНАМИЧЕСКОЕ ИСПОЛЬЗОВАНИЕ USERNAME БОТА ИЗ PYTHON
+                document.getElementById('refLink').value = `https://t.me/BOT_USERNAME_PLACEHOLDER?start=${tg.initDataUnsafe?.user?.id || 'ref'}`;
                 
                 try {
                     let response = await fetch(`/api/profile?user_id=${tg.initDataUnsafe?.user?.id || 0}&initData=${encodeURIComponent(tg.initData)}`);
@@ -1228,12 +1234,19 @@ async def webapp_handler(request):
         </script>
     </body>
     </html>
-    """.replace("ACTUAL_SYSTEM_CARD", current_card)
+    """.replace("ACTUAL_SYSTEM_CARD", current_card).replace("BOT_USERNAME_PLACEHOLDER", BOT_USERNAME)
     return web.Response(text=html_content, content_type="text/html")
 
 
 async def main():
+    global BOT_USERNAME
     await init_db()
+    
+    # ПОЛУЧАЕМ ТОЧНЫЙ USERNAME ВАШЕГО БОТА ПРИ ЗАПУСКЕ СЕРВЕРА
+    me = await bot.get_me()
+    BOT_USERNAME = me.username
+    logging.info(f"Получен username бота для реферальной системы: @{BOT_USERNAME}")
+
     app = web.Application()
     app.router.add_get("/", webapp_handler)
     app.router.add_get("/api/profile", api_profile_handler)
